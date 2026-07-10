@@ -27,3 +27,10 @@ resource "azurerm_subnet_network_security_group_association" "application" {
   subnet_id                 = azurerm_subnet.application.id
   network_security_group_id = azurerm_network_security_group.application.id
 }
+
+resource "azurerm_network_security_rule" "allow_ssh" {
+  name                        = "allow-ssh"
+  network_security_group_name = azurerm_network_security_group.application.name
+  resource_group_name         = azurerm_resource_group.core.name
+
+}
