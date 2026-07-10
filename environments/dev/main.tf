@@ -22,3 +22,8 @@ resource "azurerm_network_security_group" "application" {
   location            = azurerm_resource_group.core.location
   resource_group_name = azurerm_resource_group.core.name
 }
+
+resource "azurerm_subnet_network_security_group_association" "application" {
+  subnet_id                 = azurerm_subnet.application.id
+  network_security_group_id = azurerm_network_security_group.application.id
+}
