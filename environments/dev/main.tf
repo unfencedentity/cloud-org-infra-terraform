@@ -41,3 +41,11 @@ resource "azurerm_network_security_rule" "allow_ssh" {
   resource_group_name         = azurerm_resource_group.core.name
   network_security_group_name = azurerm_network_security_group.application.name
 }
+
+resource "azurerm_public_ip" "application" {
+  name                = "pip-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
