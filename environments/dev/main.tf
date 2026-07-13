@@ -49,3 +49,16 @@ resource "azurerm_public_ip" "application" {
   allocation_method   = "Static"
   sku                 = "Standard"
 }
+
+resource "azurerm_network_interface" "application" {
+  name                = "nic-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+
+  ip_configuration {
+    name                          = "ipconfig-app-dev-weu-001"
+    subnet_id                     = azurerm_subnet.application.id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.application.id
+  }
+}
