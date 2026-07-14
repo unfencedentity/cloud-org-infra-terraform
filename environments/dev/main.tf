@@ -62,3 +62,31 @@ resource "azurerm_network_interface" "application" {
     public_ip_address_id          = azurerm_public_ip.application.id
   }
 }
+
+resource "azurerm_linux_virtual_machine" "application" {
+  name                            = "vm-app-dev-weu-001"
+  computer_name                   = "vmappdev001"
+  location                        = azurerm_resource_group.core.location
+  resource_group_name             = azurerm_resource_group.core.name
+  network_interface_ids           = [azurerm_network_interface.application.id]
+  size                            = "Standard_B2s_v2"
+  admin_username                  = "azureadmin"
+  disable_password_authentication = true
+
+  admin_ssh_key {
+    username   = "azureadmin"
+    public_key = var.ssh_public_key
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts-gen2"
+    version   = "latest"
+  }
+}
