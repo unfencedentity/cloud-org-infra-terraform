@@ -159,6 +159,22 @@ resource "azurerm_private_endpoint" "blob" {
   }
 }
 
+resource "azurerm_log_analytics_workspace" "application" {
+  name                = "log-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
+}
+
+resource "azurerm_application_insights" "application" {
+  name                = "appi-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  workspace_id        = azurerm_log_analytics_workspace.application.id
+  application_type    = "web"
+}
+
 resource "azurerm_linux_virtual_machine" "application" {
   name                            = "vm-app-dev-weu-001"
   computer_name                   = "vmappdev001"
@@ -189,5 +205,62 @@ resource "azurerm_linux_virtual_machine" "application" {
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.application.id]
+  }
+
+  boot_diagnostics {
+    storage_account_uri = azurerm_storage_account.application.primary_blob_endpoint
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "vm" {
+  name                       = "diag-vm-app-dev-weu-001"
+  target_resource_id         = azurerm_linux_virtual_machine.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+  enabled_metric {
+    category = "AllMetrics"
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "nsg" {
+  name                       = "diag-nsg-app-dev-weu-001"
+  target_resource_id         = azurerm_network_security_group.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+  enabled_log {
+    category = "NetworkSecurityGroupEvent"
+  }
+
+  enabled_log {
+    category = "NetworkSecurityGroupRuleCounter"
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "key_vault" {
+  name                       = "diag-kv-app-dev-weu-001"
+  target_resource_id         = azurerm_key_vault.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+  enabled_log {
+    category = "AuditEvent"
+  }
+
+  enabled_log {
+    category = "AzurePolicyEvaluationDetails"
+  }
+
+  enabled_metric {
+    category = "AllMetrics"
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "storage" {
+  name                       = "diag-stappdevweu001"
+  target_resource_id         = azurerm_storage_account.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+
+  enabled_metric {
+    category = "Transaction"
   }
 }
