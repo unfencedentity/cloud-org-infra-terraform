@@ -3,6 +3,8 @@ resource "azurerm_resource_group" "core" {
   location = var.location
 }
 
+data "azurerm_client_config" "current" {}
+
 resource "azurerm_virtual_network" "core" {
   name                = "vnet-dev-core-weu-001"
   location            = azurerm_resource_group.core.location
@@ -15,6 +17,15 @@ resource "azurerm_subnet" "application" {
   resource_group_name  = azurerm_resource_group.core.name
   virtual_network_name = azurerm_virtual_network.core.name
   address_prefixes     = ["10.0.1.0/24"]
+}
+
+resource "azurerm_subnet" "private_endpoint" {
+  name                 = "snet-pe-dev-weu-001"
+  resource_group_name  = azurerm_resource_group.core.name
+  virtual_network_name = azurerm_virtual_network.core.name
+  address_prefixes     = ["10.0.2.0/24"]
+
+  private_endpoint_network_policies = "Disabled"
 }
 
 resource "azurerm_network_security_group" "application" {
