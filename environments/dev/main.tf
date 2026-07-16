@@ -19,6 +19,15 @@ resource "azurerm_subnet" "application" {
   address_prefixes     = ["10.0.1.0/24"]
 }
 
+resource "azurerm_subnet" "private_endpoint" {
+  name                 = "snet-pe-dev-weu-001"
+  resource_group_name  = azurerm_resource_group.core.name
+  virtual_network_name = azurerm_virtual_network.core.name
+  address_prefixes     = ["10.0.2.0/24"]
+
+  private_endpoint_network_policies = "Disabled"
+}
+
 resource "azurerm_network_security_group" "application" {
   name                = "nsg-app-dev-weu-001"
   location            = azurerm_resource_group.core.location
@@ -103,6 +112,51 @@ resource "azurerm_role_assignment" "key_vault_secrets_admin" {
   scope                = azurerm_key_vault.application.id
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = data.azurerm_client_config.current.object_id
+}
+
+resource "azurerm_storage_account" "application" {
+  name                            = "stappdevweu001"
+  resource_group_name             = azurerm_resource_group.core.name
+  location                        = azurerm_resource_group.core.location
+  account_tier                    = "Standard"
+  account_replication_type        = "LRS"
+  account_kind                    = "StorageV2"
+  access_tier                     = "Hot"
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+  public_network_access_enabled   = false
+  shared_access_key_enabled       = true
+}
+
+resource "azurerm_private_dns_zone" "blob" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.core.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "blob" {
+  name                  = "blob-dns-link"
+  resource_group_name   = azurerm_resource_group.core.name
+  private_dns_zone_name = azurerm_private_dns_zone.blob.name
+  virtual_network_id    = azurerm_virtual_network.core.id
+}
+
+resource "azurerm_private_endpoint" "blob" {
+  name                = "pep-stappdevweu001-blob"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  subnet_id           = azurerm_subnet.private_endpoint.id
+
+  private_service_connection {
+    name                           = "psc-stappdevweu001-blob"
+    private_connection_resource_id = azurerm_storage_account.application.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "blob-dns-zone-group"
+    private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
+  }
 }
 
 resource "azurerm_linux_virtual_machine" "application" {
