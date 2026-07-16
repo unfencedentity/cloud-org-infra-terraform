@@ -63,6 +63,12 @@ resource "azurerm_network_interface" "application" {
   }
 }
 
+resource "azurerm_user_assigned_identity" "application" {
+  name                = "id-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+}
+
 resource "azurerm_linux_virtual_machine" "application" {
   name                            = "vm-app-dev-weu-001"
   computer_name                   = "vmappdev001"
@@ -88,5 +94,10 @@ resource "azurerm_linux_virtual_machine" "application" {
     offer     = "0001-com-ubuntu-server-jammy"
     sku       = "22_04-lts-gen2"
     version   = "latest"
+  }
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.application.id]
   }
 }
