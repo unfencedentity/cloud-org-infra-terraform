@@ -3,6 +3,8 @@ resource "azurerm_resource_group" "core" {
   location = var.location
 }
 
+data "azurerm_client_config" "current" {}
+
 resource "azurerm_virtual_network" "core" {
   name                = "vnet-dev-core-weu-001"
   location            = azurerm_resource_group.core.location
@@ -67,6 +69,40 @@ resource "azurerm_user_assigned_identity" "application" {
   name                = "id-app-dev-weu-001"
   location            = azurerm_resource_group.core.location
   resource_group_name = azurerm_resource_group.core.name
+}
+
+resource "azurerm_key_vault" "application" {
+  name                       = "kv-app-dev-weu-001"
+  location                   = azurerm_resource_group.core.location
+  resource_group_name        = azurerm_resource_group.core.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  rbac_authorization_enabled = true
+  purge_protection_enabled   = false
+  soft_delete_retention_days = 7
+}
+
+resource "azurerm_key_vault_secret" "application" {
+  name         = "test-secret"
+  value        = "test-secret-value"
+  key_vault_id = azurerm_key_vault.application.id
+
+  depends_on = [
+    azurerm_role_assignment.key_vault_secrets_user,
+    azurerm_role_assignment.key_vault_secrets_admin,
+  ]
+}
+
+resource "azurerm_role_assignment" "key_vault_secrets_user" {
+  scope                = azurerm_key_vault.application.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.application.principal_id
+}
+
+resource "azurerm_role_assignment" "key_vault_secrets_admin" {
+  scope                = azurerm_key_vault.application.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
 }
 
 resource "azurerm_linux_virtual_machine" "application" {
