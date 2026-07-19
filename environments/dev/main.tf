@@ -212,6 +212,54 @@ resource "azurerm_linux_virtual_machine" "application" {
   }
 }
 
+resource "azurerm_recovery_services_vault" "application" {
+  name                = "rsv-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  sku                 = "Standard"
+  storage_mode_type   = "GeoRedundant"
+
+  tags = {
+    environment = "dev"
+    project     = "core"
+    managed_by  = "terraform"
+  }
+}
+
+resource "azurerm_backup_policy_vm" "application" {
+  name                = "bkp-vm-app-dev-weu-001"
+  resource_group_name = azurerm_resource_group.core.name
+  recovery_vault_name = azurerm_recovery_services_vault.application.name
+  timezone            = "UTC"
+
+  backup {
+    frequency = "Daily"
+    time      = "01:00"
+  }
+
+  retention_daily {
+    count = 7
+  }
+
+  retention_weekly {
+    count    = 4
+    weekdays = ["Sunday"]
+  }
+
+  retention_monthly {
+    count    = 12
+    weekdays = ["Sunday"]
+    weeks    = ["First"]
+  }
+}
+
+resource "azurerm_backup_protected_vm" "application" {
+  resource_group_name = azurerm_resource_group.core.name
+  recovery_vault_name = azurerm_recovery_services_vault.application.name
+  source_vm_id        = azurerm_linux_virtual_machine.application.id
+  backup_policy_id    = azurerm_backup_policy_vm.application.id
+}
+
 resource "azurerm_monitor_diagnostic_setting" "vm" {
   name                       = "diag-vm-app-dev-weu-001"
   target_resource_id         = azurerm_linux_virtual_machine.application.id
