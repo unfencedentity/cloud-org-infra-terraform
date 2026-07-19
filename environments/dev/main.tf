@@ -284,10 +284,10 @@ resource "azurerm_monitor_metric_alert" "vm_high_cpu" {
   resource_group_name = azurerm_resource_group.core.name
   scopes              = [azurerm_linux_virtual_machine.application.id]
   description         = "Alert when the Linux VM CPU exceeds 80 percent for 15 minutes."
-  severity            = 3
+  severity            = 2
   enabled             = true
   window_size         = "PT15M"
-  frequency           = "PT15M"
+  frequency           = "PT5M"
 
   criteria {
     metric_namespace = "Microsoft.Compute/virtualMachines"
