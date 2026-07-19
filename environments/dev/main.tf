@@ -260,6 +260,81 @@ resource "azurerm_backup_protected_vm" "application" {
   backup_policy_id    = azurerm_backup_policy_vm.application.id
 }
 
+resource "azurerm_monitor_action_group" "application" {
+  name                = "ag-app-dev-weu-001"
+  resource_group_name = azurerm_resource_group.core.name
+  short_name          = "agappdev"
+  enabled             = true
+
+  email_receiver {
+    name                    = "ops-email"
+    email_address           = var.alert_email_address
+    use_common_alert_schema = true
+  }
+
+  tags = {
+    environment = "dev"
+    project     = "core"
+    managed_by  = "terraform"
+  }
+}
+
+resource "azurerm_monitor_metric_alert" "vm_high_cpu" {
+  name                = "alert-vm-high-cpu-app-dev-weu-001"
+  resource_group_name = azurerm_resource_group.core.name
+  scopes              = [azurerm_linux_virtual_machine.application.id]
+  description         = "Alert when the Linux VM CPU exceeds 80 percent for 15 minutes."
+  severity            = 3
+  enabled             = true
+  window_size         = "PT15M"
+  frequency           = "PT15M"
+
+  criteria {
+    metric_namespace = "Microsoft.Compute/virtualMachines"
+    metric_name      = "Percentage CPU"
+    aggregation      = "Average"
+    operator         = "GreaterThan"
+    threshold        = 80
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.application.id
+  }
+
+  tags = {
+    environment = "dev"
+    project     = "core"
+    managed_by  = "terraform"
+  }
+}
+
+resource "azurerm_monitor_activity_log_alert" "service_health" {
+  name                = "alert-service-health-app-dev-weu-001"
+  resource_group_name = azurerm_resource_group.core.name
+  location            = "global"
+  scopes              = ["/subscriptions/${data.azurerm_client_config.current.subscription_id}"]
+  description         = "Alert on Azure Service Health incidents affecting the current subscription."
+  enabled             = true
+
+  criteria {
+    category = "ServiceHealth"
+
+    service_health {
+      locations = [var.location, "Global"]
+    }
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.application.id
+  }
+
+  tags = {
+    environment = "dev"
+    project     = "core"
+    managed_by  = "terraform"
+  }
+}
+
 resource "azurerm_monitor_diagnostic_setting" "vm" {
   name                       = "diag-vm-app-dev-weu-001"
   target_resource_id         = azurerm_linux_virtual_machine.application.id
