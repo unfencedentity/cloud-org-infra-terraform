@@ -5,6 +5,16 @@ resource "azurerm_resource_group" "core" {
 
 data "azurerm_client_config" "current" {}
 
+locals {
+  web_app_name = lower("app-dev-weu-${substr(sha1(data.azurerm_client_config.current.subscription_id), 0, 8)}")
+
+  common_tags = {
+    environment = "dev"
+    project     = "core"
+    managed_by  = "terraform"
+  }
+}
+
 resource "azurerm_virtual_network" "core" {
   name                = "vnet-dev-core-weu-001"
   location            = azurerm_resource_group.core.location
@@ -26,6 +36,22 @@ resource "azurerm_subnet" "private_endpoint" {
   address_prefixes     = ["10.0.2.0/24"]
 
   private_endpoint_network_policies = "Disabled"
+}
+
+resource "azurerm_subnet" "appservice_integration" {
+  name                 = "snet-appservice-integration-dev-weu-001"
+  resource_group_name  = azurerm_resource_group.core.name
+  virtual_network_name = azurerm_virtual_network.core.name
+  address_prefixes     = ["10.0.3.0/26"]
+
+  delegation {
+    name = "webapp-delegation"
+
+    service_delegation {
+      name    = "Microsoft.Web/serverFarms"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
+    }
+  }
 }
 
 resource "azurerm_network_security_group" "application" {
@@ -385,5 +411,107 @@ resource "azurerm_monitor_diagnostic_setting" "storage" {
 
   enabled_metric {
     category = "Transaction"
+  }
+}
+
+resource "azurerm_service_plan" "application" {
+  name                = "asp-app-dev-weu-001"
+  location            = azurerm_resource_group.core.location
+  resource_group_name = azurerm_resource_group.core.name
+  os_type             = "Linux"
+  sku_name            = "B1"
+  worker_count        = 1
+
+  tags = local.common_tags
+}
+
+resource "azurerm_linux_web_app" "application" {
+  name                                           = local.web_app_name
+  location                                       = azurerm_resource_group.core.location
+  resource_group_name                            = azurerm_resource_group.core.name
+  service_plan_id                                = azurerm_service_plan.application.id
+  enabled                                        = true
+  https_only                                     = true
+  public_network_access_enabled                  = true
+  client_affinity_enabled                        = false
+  virtual_network_subnet_id                      = azurerm_subnet.appservice_integration.id
+  key_vault_reference_identity_id                = azurerm_user_assigned_identity.application.id
+  ftp_publish_basic_authentication_enabled       = false
+  webdeploy_publish_basic_authentication_enabled = false
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.application.id]
+  }
+
+  site_config {
+    always_on                         = true
+    ftps_state                        = "Disabled"
+    minimum_tls_version               = "1.2"
+    scm_minimum_tls_version           = "1.2"
+    http2_enabled                     = true
+    remote_debugging_enabled          = false
+    health_check_path                 = "/"
+    health_check_eviction_time_in_min = 5
+    vnet_route_all_enabled            = true
+
+    application_stack {
+      python_version = "3.12"
+    }
+  }
+
+  app_settings = {
+    APPLICATION_SECRET                    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application.versionless_id})"
+    APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.application.connection_string
+  }
+
+  tags = local.common_tags
+}
+
+data "azurerm_monitor_diagnostic_categories" "linux_web_app" {
+  resource_id = azurerm_linux_web_app.application.id
+}
+
+data "azurerm_monitor_diagnostic_categories" "app_service_plan" {
+  resource_id = azurerm_service_plan.application.id
+}
+
+resource "azurerm_monitor_diagnostic_setting" "linux_web_app" {
+  name                       = "diag-webapp-app-dev-weu-001"
+  target_resource_id         = azurerm_linux_web_app.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+  dynamic "enabled_log" {
+    for_each = data.azurerm_monitor_diagnostic_categories.linux_web_app.log_category_types
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "enabled_metric" {
+    for_each = data.azurerm_monitor_diagnostic_categories.linux_web_app.metrics
+    content {
+      category = enabled_metric.value
+    }
+  }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "app_service_plan" {
+  name                       = "diag-asp-app-dev-weu-001"
+  target_resource_id         = azurerm_service_plan.application.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+
+  dynamic "enabled_log" {
+    for_each = data.azurerm_monitor_diagnostic_categories.app_service_plan.log_category_types
+    content {
+      category = enabled_log.value
+    }
+  }
+
+  dynamic "enabled_metric" {
+    for_each = data.azurerm_monitor_diagnostic_categories.app_service_plan.metrics
+    content {
+      category = enabled_metric.value
+    }
   }
 }
