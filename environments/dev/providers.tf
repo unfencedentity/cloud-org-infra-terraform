@@ -7,8 +7,11 @@ terraform {
       version = "~> 4.36"
     }
   }
+
+  backend "azurerm" {}
 }
 
 provider "azurerm" {
   features {}
+  storage_use_azuread = true
 }
