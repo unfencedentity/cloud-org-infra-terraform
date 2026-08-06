@@ -211,6 +211,131 @@ Describe 'SubscriptionPortability.Foundation' {
         $result.FailureKind | Should Be 'InvalidJson'
     }
 
+    It 'classifies list-locations non-zero exit as blocked LocationCatalogUnavailable without throwing' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 3
+                StdOut   = ''
+                StdErr   = 'ERROR: unable to list locations'
+                Success  = $false
+            }
+        }
+
+        $assessment = $null
+        $threw = $false
+        try {
+            $assessment = Get-AccountLocationAssessment -ProcessInvoker $processInvoker
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $false
+
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'LocationCatalogUnavailable'
+
+        $outcome = Get-AssessmentOutcome -Results @($assessment.Result)
+        $outcome.overallStatus | Should Be 'NO-GO'
+    }
+
+    It 'classifies list-locations empty stdout as blocked LocationCatalogUnavailable without throwing' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 0
+                StdOut   = ''
+                StdErr   = ''
+                Success  = $true
+            }
+        }
+
+        $assessment = $null
+        $threw = $false
+        try {
+            $assessment = Get-AccountLocationAssessment -ProcessInvoker $processInvoker
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $false
+
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'LocationCatalogUnavailable'
+    }
+
+    It 'classifies list-locations invalid JSON as blocked LocationCatalogUnavailable without throwing' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 0
+                StdOut   = 'not-json'
+                StdErr   = ''
+                Success  = $true
+            }
+        }
+
+        $assessment = $null
+        $threw = $false
+        try {
+            $assessment = Get-AccountLocationAssessment -ProcessInvoker $processInvoker
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $false
+
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'LocationCatalogUnavailable'
+    }
+
+    It 'maps account-show non-zero exit to AzureContextUnavailable' {
+        Mock -ModuleName SubscriptionPortability.Foundation Get-Command { [pscustomobject]@{ Name = 'az' } }
+        Mock -ModuleName SubscriptionPortability.Foundation Invoke-AzureCliJson {
+            [pscustomobject]@{
+                ExitCode    = 2
+                StdOut      = ''
+                StdErr      = 'simulated failure'
+                ParsedJson  = $null
+                Success     = $false
+                FailureKind = 'NonZeroExit'
+                SafeMessage = 'simulated failure'
+                Succeeded   = $false
+                Data        = $null
+                RawOutput   = 'simulated failure'
+            }
+        }
+
+        $assessment = Get-ActiveAzureContextAssessment
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'AzureContextUnavailable'
+    }
+
+    It 'maps account-show invalid JSON to AzureContextInvalid' {
+        Mock -ModuleName SubscriptionPortability.Foundation Get-Command { [pscustomobject]@{ Name = 'az' } }
+        Mock -ModuleName SubscriptionPortability.Foundation Invoke-AzureCliJson {
+            [pscustomobject]@{
+                ExitCode    = 0
+                StdOut      = 'not-json'
+                StdErr      = ''
+                ParsedJson  = $null
+                Success     = $false
+                FailureKind = 'InvalidJson'
+                SafeMessage = 'stdout not json'
+                Succeeded   = $false
+                Data        = $null
+                RawOutput   = ''
+            }
+        }
+
+        $assessment = Get-ActiveAzureContextAssessment
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'AzureContextInvalid'
+    }
+
     It 'serializes a failure profile with unavailable IDs as valid JSON' {
         $context = New-UnavailableAzureContext
         $names = New-PortableNameSetForFailure -Environment 'dev' -WorkloadRegionCode 'deu'

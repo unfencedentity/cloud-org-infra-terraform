@@ -660,8 +660,48 @@ function Get-AccountLocationNames {
     [CmdletBinding()]
     param()
 
-    $result = Invoke-AzureCliJson -Arguments @('account', 'list-locations', '-o', 'json')
-    return @($result.Data | ForEach-Object { $_.name.ToLowerInvariant() })
+    $assessment = Get-AccountLocationAssessment
+    if ($assessment.Result.status -ne 'Passed') {
+        return @()
+    }
+
+    return @($assessment.Locations)
+}
+
+function Get-AccountLocationAssessment {
+    [CmdletBinding()]
+    param(
+        [scriptblock]$ProcessInvoker
+    )
+
+    $result = Invoke-AzureCliJson -Arguments @('account', 'list-locations', '-o', 'json') -AllowFailure -ProcessInvoker $ProcessInvoker
+    if (-not $result.Success) {
+        return [pscustomobject]@{
+            Locations   = @()
+            FailureKind = $result.FailureKind
+            Result      = (New-AssessmentResult -Name 'LocationCatalog' -Status 'Blocked' -Code 'LocationCatalogUnavailable' -Message ('Azure location catalog is unavailable for validation: {0}' -f $result.SafeMessage))
+        }
+    }
+
+    $locations = @($result.Data | ForEach-Object {
+        if ($_.name) {
+            $_.name.ToLowerInvariant()
+        }
+    } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+    if ($locations.Count -eq 0) {
+        return [pscustomobject]@{
+            Locations   = @()
+            FailureKind = 'LocationCatalogEmpty'
+            Result      = (New-AssessmentResult -Name 'LocationCatalog' -Status 'Blocked' -Code 'LocationCatalogUnavailable' -Message 'Azure location catalog is unavailable for validation: no locations were returned.')
+        }
+    }
+
+    return [pscustomobject]@{
+        Locations   = @($locations)
+        FailureKind = $null
+        Result      = (New-AssessmentResult -Name 'LocationCatalog' -Status 'Passed' -Code 'LocationCatalogAvailable' -Message 'Azure location catalog is available for validation.')
+    }
 }
 
 function Test-ExpectedContextMatch {
@@ -1112,6 +1152,7 @@ Export-ModuleMember -Function @(
     'Get-ActiveAzureContextAssessment',
     'Get-SubscriptionStateAssessment',
     'Get-AccountLocationNames',
+    'Get-AccountLocationAssessment',
     'Test-ExpectedContextMatch',
     'Test-LocationPair',
     'Get-RequiredProviderDefinitions',

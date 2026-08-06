@@ -47,10 +47,15 @@ Returns the generated profile object.
 Skips live Azure CLI validation and generates a dry-run NO-GO profile with NotVerifiable Azure checks.
 
 .EXAMPLE
-./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 -ExpectedTenantId '00000000-0000-0000-0000-000000000000' -ExpectedSubscriptionId '11111111-1111-1111-1111-111111111111'
+./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 `
+    -ExpectedTenantId '<EXPECTED_TENANT_ID>' `
+    -ExpectedSubscriptionId '<EXPECTED_SUBSCRIPTION_ID>' `
+    -PassThru
 
 .EXAMPLE
-./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 -Offline -PassThru
+./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 `
+    -Offline `
+    -PassThru
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -135,11 +140,21 @@ try {
             )
             $subscriptionStateResult = Get-SubscriptionStateAssessment -Context $context
 
-            $locations = Get-AccountLocationNames
-            $regionResults = @(
-                Test-LocationPair -RegionCode $WorkloadRegionCode -Location $WorkloadLocation -AvailableLocations $locations -Label 'Workload'
-                Test-LocationPair -RegionCode $MonitoringRegionCode -Location $MonitoringLocation -AvailableLocations $locations -Label 'Monitoring'
-            )
+            $locationCatalogAssessment = Get-AccountLocationAssessment
+            if ($locationCatalogAssessment.Result.status -eq 'Passed') {
+                $locations = @($locationCatalogAssessment.Locations)
+                $regionResults = @(
+                    Test-LocationPair -RegionCode $WorkloadRegionCode -Location $WorkloadLocation -AvailableLocations $locations -Label 'Workload'
+                    Test-LocationPair -RegionCode $MonitoringRegionCode -Location $MonitoringLocation -AvailableLocations $locations -Label 'Monitoring'
+                )
+            }
+            else {
+                $regionResults = @(
+                    $locationCatalogAssessment.Result
+                    New-AssessmentResult -Name 'WorkloadLocation' -Status 'Blocked' -Code 'LocationCatalogUnavailable' -Message 'Workload location cannot be validated because the Azure location catalog is unavailable.'
+                    New-AssessmentResult -Name 'MonitoringLocation' -Status 'Blocked' -Code 'LocationCatalogUnavailable' -Message 'Monitoring location cannot be validated because the Azure location catalog is unavailable.'
+                )
+            }
 
             $providerResults = Get-ProviderRegistrationResults -ProviderDefinitions $providerDefinitions
             $resourceTypeResults = Get-ProviderResourceTypeLocationResults -ProviderDefinitions $providerDefinitions -WorkloadLocation $WorkloadLocation -MonitoringLocation $MonitoringLocation
