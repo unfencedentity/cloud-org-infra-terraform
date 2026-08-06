@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "1.0.0",
+  "generatedAtUtc": "2026-08-06T00:00:00.0000000Z",
+  "environment": "dev",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "subscriptionId": "11111111-1111-1111-1111-111111111111",
+  "maskedTenantId": "...0000",
+  "maskedSubscriptionId": "...1111",
+  "workloadLocation": "denmarkeast",
+  "workloadRegionCode": "deu",
+  "monitoringLocation": "swedencentral",
+  "monitoringRegionCode": "swe",
+  "addressSpace": "10.0.0.0/16",
+  "vmSize": "Standard_B1s",
+  "appServiceSku": "B1",
+  "deterministicSuffix": "0f3a5c7d9e",
+  "proposedNames": {
+    "backendResourceGroup": "rg-dev-tfstate-deu-0f3a5c7d9e",
+    "backendStorageAccount": "sttfdevdeu0f3a5c7d9e",
+    "workloadResourceGroup": "rg-dev-core-deu-0f3a5c7d9e",
+    "applicationStorage": "stappdevdeu0f3a5c7d9e",
+    "keyVault": "kv-app-dev-deu-0f3a5c7d",
+    "linuxWebApp": "app-dev-deu-0f3a5c7d9e"
+  },
+  "providerResults": [
+    {
+      "name": "Microsoft.Network",
+      "status": "Passed",
+      "message": "Provider is registered.",
+      "data": {
+        "registrationState": "Registered"
+      }
+    }
+  ],
+  "regionResults": [
+    {
+      "name": "WorkloadLocation",
+      "status": "Passed",
+      "message": "Location 'denmarkeast' is valid for region code 'deu'.",
+      "data": null
+    }
+  ],
+  "skuResults": [
+    {
+      "name": "VmSku",
+      "status": "Passed",
+      "message": "VM SKU 'Standard_B1s' is available in 'denmarkeast' with no published restrictions.",
+      "data": {
+        "family": "standardBSFamily",
+        "size": "Standard_B1s"
+      }
+    }
+  ],
+  "quotaResults": [
+    {
+      "name": "ComputeQuota",
+      "status": "Warning",
+      "message": "Regional vCPU quota is available, but the matching VM family quota could not be resolved from CLI usage data.",
+      "data": null
+    }
+  ],
+  "overallStatus": "GO",
+  "blockers": [],
+  "warnings": [
+    "ComputeQuota: Regional vCPU quota is available, but the matching VM family quota could not be resolved from CLI usage data."
+  ]
+}

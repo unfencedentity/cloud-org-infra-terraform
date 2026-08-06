@@ -1,0 +1,211 @@
+<#
+.SYNOPSIS
+Performs a read-only subscription portability assessment for Terraform onboarding.
+
+.DESCRIPTION
+Validates the current Azure CLI tenant and subscription context, checks provider and regional
+readiness, evaluates VM and App Service portability constraints, and generates a deterministic,
+non-secret onboarding profile for later backend bootstrap and CI/CD capabilities.
+
+.PARAMETER Environment
+Deployment environment name. Defaults to dev.
+
+.PARAMETER WorkloadLocation
+Azure location for workload resources. Defaults to denmarkeast.
+
+.PARAMETER WorkloadRegionCode
+Short region code used in naming. Defaults to deu.
+
+.PARAMETER MonitoringLocation
+Azure location for monitoring resources. Defaults to swedencentral.
+
+.PARAMETER MonitoringRegionCode
+Short region code used in naming for monitoring. Defaults to swe.
+
+.PARAMETER AddressSpace
+Proposed workload VNet address space. Defaults to 10.0.0.0/16.
+
+.PARAMETER VmSize
+VM SKU to validate. Defaults to Standard_B1s based on the proven cloud-org-infra deployment.
+
+.PARAMETER AppServiceSku
+Linux App Service plan SKU to validate. Defaults to B1.
+
+.PARAMETER ExpectedTenantId
+Optional tenant guardrail. If supplied and the active Azure CLI tenant does not match, the result is NO-GO.
+
+.PARAMETER ExpectedSubscriptionId
+Optional subscription guardrail. If supplied and the active Azure CLI subscription does not match, the result is NO-GO.
+
+.PARAMETER OutputPath
+Path for the generated onboarding profile JSON. Defaults to .generated/onboarding/<environment>-profile.json.
+
+.PARAMETER PassThru
+Returns the generated profile object.
+
+.PARAMETER Offline
+Skips live Azure CLI validation and generates a dry-run NO-GO profile with NotVerifiable Azure checks.
+
+.EXAMPLE
+./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 -ExpectedTenantId '00000000-0000-0000-0000-000000000000' -ExpectedSubscriptionId '11111111-1111-1111-1111-111111111111'
+
+.EXAMPLE
+./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 -Offline -PassThru
+#>
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    [ValidatePattern('^(dev|test|prod)$')]
+    [string]$Environment = 'dev',
+
+    [ValidateNotNullOrEmpty()]
+    [string]$WorkloadLocation = 'denmarkeast',
+
+    [ValidatePattern('^[a-z0-9]{2,8}$')]
+    [string]$WorkloadRegionCode = 'deu',
+
+    [ValidateNotNullOrEmpty()]
+    [string]$MonitoringLocation = 'swedencentral',
+
+    [ValidatePattern('^[a-z0-9]{2,8}$')]
+    [string]$MonitoringRegionCode = 'swe',
+
+    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$')]
+    [string]$AddressSpace = '10.0.0.0/16',
+
+    [ValidateNotNullOrEmpty()]
+    [string]$VmSize = 'Standard_B1s',
+
+    [ValidateNotNullOrEmpty()]
+    [string]$AppServiceSku = 'B1',
+
+    [ValidatePattern('^[0-9a-fA-F-]{36}$')]
+    [string]$ExpectedTenantId,
+
+    [ValidatePattern('^[0-9a-fA-F-]{36}$')]
+    [string]$ExpectedSubscriptionId,
+
+    [string]$OutputPath,
+
+    [switch]$PassThru,
+
+    [switch]$Offline
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'SubscriptionPortability.Foundation.psm1'
+Import-Module $modulePath -Force
+
+try {
+    if (-not $Offline -and -not (Get-Command az -ErrorAction SilentlyContinue)) {
+        throw 'Azure CLI is required for live assessments. Install Azure CLI or use -Offline for dry-run validation.'
+    }
+
+    $resolvedOutputPath = Resolve-AssessmentOutputPath -Environment $Environment -OutputPath $OutputPath
+    $providerDefinitions = Get-RequiredProviderDefinitions
+
+    if ($Offline) {
+        $context = New-OfflineAzureContext -ExpectedTenantId $ExpectedTenantId -ExpectedSubscriptionId $ExpectedSubscriptionId
+        $expectedContextResults = @(
+            Test-ExpectedContextMatch -Context $context -ExpectedTenantId $ExpectedTenantId -ExpectedSubscriptionId $ExpectedSubscriptionId
+        )
+        $providerResults = @($providerDefinitions | ForEach-Object {
+            New-AssessmentResult -Name $_.Namespace -Status 'NotVerifiable' -Message 'Offline mode does not query Azure provider registration.'
+        })
+        $regionResults = @(
+            New-AssessmentResult -Name 'WorkloadLocation' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure location availability.'
+            New-AssessmentResult -Name 'MonitoringLocation' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure location availability.'
+        )
+        $resourceTypeResults = @($providerDefinitions | ForEach-Object {
+            foreach ($resourceType in $_.ResourceTypes) {
+                New-AssessmentResult -Name ("{0}/{1}" -f $_.Namespace, $resourceType) -Status 'NotVerifiable' -Message 'Offline mode does not query provider resource type metadata.'
+            }
+        })
+        $vmSkuResult = New-AssessmentResult -Name 'VmSku' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure VM SKU availability.'
+        $appServiceSkuResult = New-AssessmentResult -Name 'AppServiceSku' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure App Service SKU availability.'
+        $quotaResult = New-AssessmentResult -Name 'ComputeQuota' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure compute quota usage.'
+        $subscriptionStateResult = New-AssessmentResult -Name 'SubscriptionState' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure subscription state.'
+    }
+    else {
+        $context = Get-ActiveAzureContext
+        $expectedContextResults = @(
+            Test-ExpectedContextMatch -Context $context -ExpectedTenantId $ExpectedTenantId -ExpectedSubscriptionId $ExpectedSubscriptionId
+        )
+
+        $subscriptionStateStatus = if ($context.state -eq 'Enabled') { 'Passed' } else { 'Blocked' }
+        $subscriptionStateMessage = if ($context.state -eq 'Enabled') { 'Active subscription is enabled.' } else { "Active subscription state is '$($context.state)'." }
+        $subscriptionStateResult = New-AssessmentResult -Name 'SubscriptionState' -Status $subscriptionStateStatus -Message $subscriptionStateMessage
+
+        $locations = Get-AccountLocationNames
+        $regionResults = @(
+            Test-LocationPair -RegionCode $WorkloadRegionCode -Location $WorkloadLocation -AvailableLocations $locations -Label 'Workload'
+            Test-LocationPair -RegionCode $MonitoringRegionCode -Location $MonitoringLocation -AvailableLocations $locations -Label 'Monitoring'
+        )
+
+        $providerResults = Get-ProviderRegistrationResults -ProviderDefinitions $providerDefinitions
+        $resourceTypeResults = Get-ProviderResourceTypeLocationResults -ProviderDefinitions $providerDefinitions -WorkloadLocation $WorkloadLocation -MonitoringLocation $MonitoringLocation
+        $vmSkuResult = Get-VmSkuAssessment -Location $WorkloadLocation -VmSize $VmSize
+        $appServiceSkuResult = Get-AppServiceSkuAssessment -Location $WorkloadLocation -AppServiceSku $AppServiceSku
+        $quotaResult = Get-ComputeQuotaAssessment -Location $WorkloadLocation -VmSkuMetadata $vmSkuResult.data
+    }
+
+    $proposedNames = New-PortableNameSet -TenantId $context.tenantId -SubscriptionId $context.id -Environment $Environment -WorkloadRegionCode $WorkloadRegionCode
+
+    $allResults = @(
+        $expectedContextResults
+        $subscriptionStateResult
+        $providerResults
+        $regionResults
+        $resourceTypeResults
+        $vmSkuResult
+        $appServiceSkuResult
+        $quotaResult
+    )
+
+    $outcome = Get-AssessmentOutcome -Results $allResults
+
+    $profileParams = @{
+        Environment          = $Environment
+        Context              = $context
+        WorkloadLocation     = $WorkloadLocation
+        WorkloadRegionCode   = $WorkloadRegionCode
+        MonitoringLocation   = $MonitoringLocation
+        MonitoringRegionCode = $MonitoringRegionCode
+        AddressSpace         = $AddressSpace
+        VmSize               = $VmSize
+        AppServiceSku        = $AppServiceSku
+        ProposedNames        = $proposedNames
+        ProviderResults      = $providerResults
+        RegionResults        = @($regionResults + $resourceTypeResults)
+        SkuResults           = @($vmSkuResult, $appServiceSkuResult)
+        QuotaResults         = @($quotaResult)
+        OverallStatus        = $outcome.overallStatus
+        Blockers             = $outcome.blockers
+        Warnings             = $outcome.warnings
+    }
+
+    $profile = New-SubscriptionPortabilityProfile @profileParams
+
+    $outputDirectory = Split-Path -Path $resolvedOutputPath -Parent
+    if (-not [string]::IsNullOrWhiteSpace($outputDirectory) -and -not (Test-Path $outputDirectory)) {
+        if ($PSCmdlet.ShouldProcess($outputDirectory, 'Create local onboarding output directory')) {
+            $null = New-Item -Path $outputDirectory -ItemType Directory -Force
+        }
+    }
+
+    if ($PSCmdlet.ShouldProcess($resolvedOutputPath, 'Write onboarding profile JSON')) {
+        $profile | ConvertTo-Json -Depth 12 | Set-Content -Path $resolvedOutputPath -Encoding utf8
+    }
+
+    Write-AssessmentSummary -Profile $profile -Context $context -OutputPath $resolvedOutputPath
+
+    if ($PassThru) {
+        return $profile
+    }
+}
+catch {
+    $message = $_.Exception.Message
+    Write-Error $message
+    throw
+}
