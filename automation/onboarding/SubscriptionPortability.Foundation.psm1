@@ -24,6 +24,42 @@ $script:RequiredProviderDefinitions = @(
     [pscustomobject]@{ Namespace = 'Microsoft.Authorization'; ResourceTypes = @(); Target = 'Global' }
 )
 
+$script:UnavailableDisplayValue = '<unavailable>'
+
+function Get-SafeDisplayIdentifier {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Identifier
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Identifier)) {
+        return $script:UnavailableDisplayValue
+    }
+
+    return (Get-MaskedIdentifier -Identifier $Identifier)
+}
+
+function Get-SafeCliText {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ''
+    }
+
+    $safe = $Text
+    $safe = [regex]::Replace($safe, '(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', '<masked-guid>')
+    $safe = [regex]::Replace($safe, '(?i)(access_token|refresh_token|id_token|client_secret)\s*[:=]\s*[^\s\"\'']+', '$1=<redacted>')
+    $safe = [regex]::Replace($safe, '(?i)bearer\s+[A-Za-z0-9\-\._~\+\/]+=*', 'bearer <redacted>')
+    return $safe.Trim()
+}
+
 function Get-MaskedIdentifier {
     [CmdletBinding()]
     param(
@@ -121,6 +157,9 @@ function New-AssessmentResult {
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
+        [ValidatePattern('^[A-Za-z][A-Za-z0-9]{2,64}$')]
+        [string]$Code,
+
         [AllowNull()]
         [object]$Data = $null
     )
@@ -129,6 +168,7 @@ function New-AssessmentResult {
         name    = $Name
         status  = $Status
         message = $Message
+        code    = $Code
         data    = $Data
     }
 }
@@ -170,10 +210,12 @@ function Get-AssessmentOutcome {
 
         switch ($result.status) {
             'Blocked' {
-                $blockers.Add(("{0}: {1}" -f $result.name, $result.message))
+                $prefix = if (-not [string]::IsNullOrWhiteSpace($result.code)) { "[{0}] " -f $result.code } else { '' }
+                $blockers.Add(("{0}{1}: {2}" -f $prefix, $result.name, $result.message))
             }
             'NotVerifiable' {
-                $blockers.Add(("{0}: {1}" -f $result.name, $result.message))
+                $prefix = if (-not [string]::IsNullOrWhiteSpace($result.code)) { "[{0}] " -f $result.code } else { '' }
+                $blockers.Add(("{0}{1}: {2}" -f $prefix, $result.name, $result.message))
             }
             'Warning' {
                 $warnings.Add(("{0}: {1}" -f $result.name, $result.message))
@@ -305,6 +347,31 @@ function New-PortableNameSet {
     }
 }
 
+function New-PortableNameSetForFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Environment,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WorkloadRegionCode
+    )
+
+    $envCode = $Environment.Trim().ToLowerInvariant()
+    $regionCode = $WorkloadRegionCode.Trim().ToLowerInvariant()
+    $suffix = 'unavail0000'
+
+    [pscustomobject]@{
+        deterministicSuffix   = $suffix
+        backendResourceGroup  = "rg-$envCode-tfstate-$regionCode-$suffix"
+        backendStorageAccount = (New-AzureStorageAccountName -Prefix ("sttf$envCode$regionCode") -Suffix $suffix)
+        workloadResourceGroup = "rg-$envCode-core-$regionCode-$suffix"
+        applicationStorage    = (New-AzureStorageAccountName -Prefix ("stapp$envCode$regionCode") -Suffix $suffix)
+        keyVault              = (New-AzureKeyVaultName -Prefix ("kv-app-$envCode-$regionCode") -Suffix $suffix)
+        linuxWebApp           = (New-AzureWebAppName -Prefix ("app-$envCode-$regionCode") -Suffix $suffix)
+    }
+}
+
 function New-OfflineAzureContext {
     [CmdletBinding()]
     param(
@@ -325,42 +392,207 @@ function New-OfflineAzureContext {
     }
 }
 
+function New-UnavailableAzureContext {
+    [CmdletBinding()]
+    param()
+
+    [pscustomobject]@{
+        user = [pscustomobject]@{
+            name = $script:UnavailableDisplayValue
+            type = 'unavailable'
+        }
+        tenantId  = $null
+        id        = $null
+        name      = $script:UnavailableDisplayValue
+        state     = 'Unknown'
+        isDefault = $false
+    }
+}
+
+function Invoke-AzureCliProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            ExitCode = 127
+            StdOut   = ''
+            StdErr   = 'Azure CLI executable was not found in PATH.'
+            Success  = $false
+        }
+    }
+
+    $process = $null
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = 'az'
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.CreateNoWindow = $true
+
+        foreach ($argument in $Arguments) {
+            $null = $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+
+        $null = $process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StdOut   = $stdout
+            StdErr   = $stderr
+            Success  = ($process.ExitCode -eq 0)
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            ExitCode = -1
+            StdOut   = ''
+            StdErr   = $_.Exception.Message
+            Success  = $false
+        }
+    }
+    finally {
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
+    }
+}
+
 function Invoke-AzureCliJson {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
 
+        [scriptblock]$ProcessInvoker,
+
         [switch]$AllowFailure
     )
 
-    $commandOutput = & az @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    $text = @($commandOutput) -join [Environment]::NewLine
-
-    if ($exitCode -ne 0) {
-        if ($AllowFailure) {
-            return [pscustomobject]@{
-                Succeeded = $false
-                ExitCode  = $exitCode
-                Data      = $null
-                RawOutput = $text
-            }
+    if ($null -eq $ProcessInvoker) {
+        $ProcessInvoker = {
+            param($InnerArguments)
+            Invoke-AzureCliProcess -Arguments $InnerArguments
         }
-
-        throw "Azure CLI command failed: az $($Arguments -join ' ')$([Environment]::NewLine)$text"
     }
 
-    $data = $null
-    if (-not [string]::IsNullOrWhiteSpace($text)) {
-        $data = $text | ConvertFrom-Json -Depth 32
+    $execution = & $ProcessInvoker $Arguments
+    $exitCode = [int]$execution.ExitCode
+    $stdout = if ($null -eq $execution.StdOut) { '' } else { [string]$execution.StdOut }
+    $stderr = if ($null -eq $execution.StdErr) { '' } else { [string]$execution.StdErr }
+    $safeStdErr = Get-SafeCliText -Text $stderr
+    $failureKind = $null
+    $safeMessage = 'Azure CLI command completed successfully.'
+
+    if ($exitCode -ne 0) {
+        if (-not [string]::IsNullOrWhiteSpace($safeStdErr)) {
+            $safeMessage = "Azure CLI returned a non-zero exit code: $safeStdErr"
+        }
+        else {
+            $safeMessage = 'Azure CLI returned a non-zero exit code.'
+        }
+
+        if ($exitCode -eq 127) {
+            $failureKind = 'AzureCliUnavailable'
+            $safeMessage = 'Azure CLI executable was not found in PATH.'
+        }
+        else {
+            $failureKind = 'NonZeroExit'
+        }
+
+        $result = [pscustomobject]@{
+            ExitCode    = $exitCode
+            StdOut      = $stdout
+            StdErr      = $safeStdErr
+            ParsedJson  = $null
+            Success     = $false
+            FailureKind = $failureKind
+            SafeMessage = $safeMessage
+            Succeeded   = $false
+            Data        = $null
+            RawOutput   = $safeStdErr
+        }
+
+        if ($AllowFailure) {
+            return $result
+        }
+
+        throw "Azure CLI command failed: az $($Arguments -join ' ')$([Environment]::NewLine)$safeMessage"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        $failureKind = 'EmptyStdOut'
+        $safeMessage = 'Azure CLI returned empty stdout where JSON output was required.'
+        $result = [pscustomobject]@{
+            ExitCode    = $exitCode
+            StdOut      = $stdout
+            StdErr      = $safeStdErr
+            ParsedJson  = $null
+            Success     = $false
+            FailureKind = $failureKind
+            SafeMessage = $safeMessage
+            Succeeded   = $false
+            Data        = $null
+            RawOutput   = $safeStdErr
+        }
+
+        if ($AllowFailure) {
+            return $result
+        }
+
+        throw "Azure CLI command failed: az $($Arguments -join ' ')$([Environment]::NewLine)$safeMessage"
+    }
+
+    try {
+        $data = $stdout | ConvertFrom-Json -Depth 32
+    }
+    catch {
+        $failureKind = 'InvalidJson'
+        $safeMessage = 'Azure CLI stdout was not valid JSON.'
+        $result = [pscustomobject]@{
+            ExitCode    = $exitCode
+            StdOut      = ''
+            StdErr      = $safeStdErr
+            ParsedJson  = $null
+            Success     = $false
+            FailureKind = $failureKind
+            SafeMessage = $safeMessage
+            Succeeded   = $false
+            Data        = $null
+            RawOutput   = $safeStdErr
+        }
+
+        if ($AllowFailure) {
+            return $result
+        }
+
+        throw "Azure CLI command failed: az $($Arguments -join ' ')$([Environment]::NewLine)$safeMessage"
     }
 
     return [pscustomobject]@{
-        Succeeded = $true
-        ExitCode  = 0
-        Data      = $data
-        RawOutput = $text
+        ExitCode    = 0
+        StdOut      = $stdout
+        StdErr      = $safeStdErr
+        ParsedJson  = $data
+        Success     = $true
+        FailureKind = $null
+        SafeMessage = 'Azure CLI command completed successfully.'
+        Succeeded   = $true
+        Data        = $data
+        RawOutput   = $safeStdErr
     }
 }
 
@@ -370,6 +602,58 @@ function Get-ActiveAzureContext {
 
     $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json')
     return $result.Data
+}
+
+function Get-ActiveAzureContextAssessment {
+    [CmdletBinding()]
+    param()
+
+    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            Context = (New-UnavailableAzureContext)
+            Result  = (New-AssessmentResult -Name 'AzureContext' -Status 'Blocked' -Code 'AzureCliUnavailable' -Message 'Azure CLI executable is not available in PATH. Install Azure CLI before running a live assessment.')
+        }
+    }
+
+    $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json') -AllowFailure
+    if (-not $result.Success) {
+        $statusCode = if ($result.FailureKind -eq 'InvalidJson' -or $result.FailureKind -eq 'EmptyStdOut') { 'AzureContextInvalid' } else { 'AzureContextUnavailable' }
+        return [pscustomobject]@{
+            Context = (New-UnavailableAzureContext)
+            Result  = (New-AssessmentResult -Name 'AzureContext' -Status 'Blocked' -Code $statusCode -Message ('Active Azure account context is not usable for assessment: {0}' -f $result.SafeMessage))
+        }
+    }
+
+    $context = $result.ParsedJson
+    if ($null -eq $context -or [string]::IsNullOrWhiteSpace($context.tenantId) -or [string]::IsNullOrWhiteSpace($context.id)) {
+        return [pscustomobject]@{
+            Context = (New-UnavailableAzureContext)
+            Result  = (New-AssessmentResult -Name 'AzureContext' -Status 'Blocked' -Code 'AzureContextInvalid' -Message 'Azure CLI returned account data missing tenantId or subscriptionId.')
+        }
+    }
+
+    return [pscustomobject]@{
+        Context = $context
+        Result  = (New-AssessmentResult -Name 'AzureContext' -Status 'Passed' -Code 'AzureContextAvailable' -Message 'Active Azure account context is available for assessment.')
+    }
+}
+
+function Get-SubscriptionStateAssessment {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Context
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Context.state)) {
+        return (New-AssessmentResult -Name 'SubscriptionState' -Status 'NotVerifiable' -Code 'SubscriptionStateUnknown' -Message 'Active subscription state is not available in the Azure context payload.')
+    }
+
+    if ($Context.state -eq 'Enabled') {
+        return (New-AssessmentResult -Name 'SubscriptionState' -Status 'Passed' -Code 'SubscriptionEnabled' -Message 'Active subscription is enabled.')
+    }
+
+    return (New-AssessmentResult -Name 'SubscriptionState' -Status 'Blocked' -Code 'SubscriptionDisabled' -Message ("Active subscription state is '$($Context.state)'."))
 }
 
 function Get-AccountLocationNames {
@@ -395,19 +679,19 @@ function Test-ExpectedContextMatch {
 
     if (-not [string]::IsNullOrWhiteSpace($ExpectedTenantId)) {
         if ($Context.tenantId -eq $ExpectedTenantId) {
-            $results += New-AssessmentResult -Name 'ExpectedTenantId' -Status 'Passed' -Message ('Expected tenant matched {0}.' -f (Get-MaskedIdentifier -Identifier $ExpectedTenantId))
+            $results += New-AssessmentResult -Name 'ExpectedTenantId' -Status 'Passed' -Code 'TenantMatched' -Message ('Expected tenant matched {0}.' -f (Get-MaskedIdentifier -Identifier $ExpectedTenantId))
         }
         else {
-            $results += New-AssessmentResult -Name 'ExpectedTenantId' -Status 'Blocked' -Message ('Expected tenant {0} does not match active tenant {1}.' -f (Get-MaskedIdentifier -Identifier $ExpectedTenantId), (Get-MaskedIdentifier -Identifier $Context.tenantId))
+            $results += New-AssessmentResult -Name 'ExpectedTenantId' -Status 'Blocked' -Code 'TenantMismatch' -Message ('Expected tenant {0} does not match active tenant {1}.' -f (Get-MaskedIdentifier -Identifier $ExpectedTenantId), (Get-SafeDisplayIdentifier -Identifier $Context.tenantId))
         }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ExpectedSubscriptionId)) {
         if ($Context.id -eq $ExpectedSubscriptionId) {
-            $results += New-AssessmentResult -Name 'ExpectedSubscriptionId' -Status 'Passed' -Message ('Expected subscription matched {0}.' -f (Get-MaskedIdentifier -Identifier $ExpectedSubscriptionId))
+            $results += New-AssessmentResult -Name 'ExpectedSubscriptionId' -Status 'Passed' -Code 'SubscriptionMatched' -Message ('Expected subscription matched {0}.' -f (Get-MaskedIdentifier -Identifier $ExpectedSubscriptionId))
         }
         else {
-            $results += New-AssessmentResult -Name 'ExpectedSubscriptionId' -Status 'Blocked' -Message ('Expected subscription {0} does not match active subscription {1}.' -f (Get-MaskedIdentifier -Identifier $ExpectedSubscriptionId), (Get-MaskedIdentifier -Identifier $Context.id))
+            $results += New-AssessmentResult -Name 'ExpectedSubscriptionId' -Status 'Blocked' -Code 'SubscriptionMismatch' -Message ('Expected subscription {0} does not match active subscription {1}.' -f (Get-MaskedIdentifier -Identifier $ExpectedSubscriptionId), (Get-SafeDisplayIdentifier -Identifier $Context.id))
         }
     }
 
@@ -466,8 +750,8 @@ function Get-ProviderRegistrationResults {
     $results = New-Object System.Collections.Generic.List[object]
     foreach ($definition in $ProviderDefinitions) {
         $provider = Invoke-AzureCliJson -Arguments @('provider', 'show', '--namespace', $definition.Namespace, '-o', 'json') -AllowFailure
-        if (-not $provider.Succeeded) {
-            $result = New-AssessmentResult -Name $definition.Namespace -Status 'NotVerifiable' -Message ('Could not read provider registration state: {0}' -f $provider.RawOutput)
+        if (-not $provider.Success) {
+            $result = New-AssessmentResult -Name $definition.Namespace -Status 'NotVerifiable' -Code 'ProviderStateUnavailable' -Message ('Could not read provider registration state: {0}' -f $provider.SafeMessage)
             $results.Add($result)
             continue
         }
@@ -507,9 +791,9 @@ function Get-ProviderResourceTypeLocationResults {
         }
 
         $provider = Invoke-AzureCliJson -Arguments @('provider', 'show', '--namespace', $definition.Namespace, '-o', 'json') -AllowFailure
-        if (-not $provider.Succeeded) {
+        if (-not $provider.Success) {
             foreach ($resourceType in $definition.ResourceTypes) {
-                $result = New-AssessmentResult -Name ("{0}/{1}" -f $definition.Namespace, $resourceType) -Status 'NotVerifiable' -Message ('Could not read provider resource types: {0}' -f $provider.RawOutput)
+                $result = New-AssessmentResult -Name ("{0}/{1}" -f $definition.Namespace, $resourceType) -Status 'NotVerifiable' -Code 'ProviderResourceTypeUnavailable' -Message ('Could not read provider resource types: {0}' -f $provider.SafeMessage)
                 $results.Add($result)
             }
             continue
@@ -556,8 +840,8 @@ function Get-VmSkuAssessment {
     )
 
     $skuResult = Invoke-AzureCliJson -Arguments @('vm', 'list-skus', '-l', $Location, '--resource-type', 'virtualMachines', '--size', $VmSize, '-o', 'json') -AllowFailure
-    if (-not $skuResult.Succeeded) {
-        return (New-AssessmentResult -Name 'VmSku' -Status 'NotVerifiable' -Message ('Azure CLI could not verify VM SKU availability: {0}' -f $skuResult.RawOutput))
+    if (-not $skuResult.Success) {
+        return (New-AssessmentResult -Name 'VmSku' -Status 'NotVerifiable' -Code 'VmSkuUnavailable' -Message ('Azure CLI could not verify VM SKU availability: {0}' -f $skuResult.SafeMessage))
     }
 
     $sku = @($skuResult.Data | Where-Object { $_.name -eq $VmSize }) | Select-Object -First 1
@@ -593,8 +877,8 @@ function Get-ComputeQuotaAssessment {
     )
 
     $usageResult = Invoke-AzureCliJson -Arguments @('vm', 'list-usage', '-l', $Location, '-o', 'json') -AllowFailure
-    if (-not $usageResult.Succeeded) {
-        return (New-AssessmentResult -Name 'ComputeQuota' -Status 'NotVerifiable' -Message ('Azure CLI could not inspect VM quota usage: {0}' -f $usageResult.RawOutput))
+    if (-not $usageResult.Success) {
+        return (New-AssessmentResult -Name 'ComputeQuota' -Status 'NotVerifiable' -Code 'ComputeQuotaUnavailable' -Message ('Azure CLI could not inspect VM quota usage: {0}' -f $usageResult.SafeMessage))
     }
 
     $totalRegional = @($usageResult.Data | Where-Object { $_.name.value -eq 'cores' -or $_.name.localizedValue -eq 'Total Regional vCPUs' }) | Select-Object -First 1
@@ -641,8 +925,8 @@ function Get-AppServiceSkuAssessment {
     )
 
     $locationResult = Invoke-AzureCliJson -Arguments @('appservice', 'list-locations', '--sku', $AppServiceSku, '--linux-workers-enabled', '-o', 'json') -AllowFailure
-    if (-not $locationResult.Succeeded) {
-        return (New-AssessmentResult -Name 'AppServiceSku' -Status 'NotVerifiable' -Message ('Azure CLI could not verify Linux App Service availability: {0}' -f $locationResult.RawOutput))
+    if (-not $locationResult.Success) {
+        return (New-AssessmentResult -Name 'AppServiceSku' -Status 'NotVerifiable' -Code 'AppServiceSkuUnavailable' -Message ('Azure CLI could not verify Linux App Service availability: {0}' -f $locationResult.SafeMessage))
     }
 
     $availableLocations = @($locationResult.Data | ForEach-Object {
@@ -732,11 +1016,12 @@ function New-SubscriptionPortabilityProfile {
     [pscustomobject]@{
         schemaVersion        = '1.0.0'
         generatedAtUtc       = (Get-Date).ToUniversalTime().ToString('o')
+        assessmentOutcomeType = $(if ($OverallStatus -eq 'GO') { 'Approved' } else { 'Failure' })
         environment          = $Environment.Trim().ToLowerInvariant()
         tenantId             = $Context.tenantId
         subscriptionId       = $Context.id
-        maskedTenantId       = (Get-MaskedIdentifier -Identifier $Context.tenantId)
-        maskedSubscriptionId = (Get-MaskedIdentifier -Identifier $Context.id)
+        maskedTenantId       = (Get-SafeDisplayIdentifier -Identifier $Context.tenantId)
+        maskedSubscriptionId = (Get-SafeDisplayIdentifier -Identifier $Context.id)
         workloadLocation     = $WorkloadLocation.Trim().ToLowerInvariant()
         workloadRegionCode   = $WorkloadRegionCode.Trim().ToLowerInvariant()
         monitoringLocation   = $MonitoringLocation.Trim().ToLowerInvariant()
@@ -806,6 +1091,8 @@ function Write-AssessmentSummary {
 
 Export-ModuleMember -Function @(
     'Get-MaskedIdentifier',
+    'Get-SafeDisplayIdentifier',
+    'Get-SafeCliText',
     'Get-Sha256Hex',
     'Get-DeterministicSuffix',
     'Resolve-AssessmentOutputPath',
@@ -816,9 +1103,14 @@ Export-ModuleMember -Function @(
     'New-AzureKeyVaultName',
     'New-AzureWebAppName',
     'New-PortableNameSet',
+    'New-PortableNameSetForFailure',
     'New-OfflineAzureContext',
+    'New-UnavailableAzureContext',
+    'Invoke-AzureCliProcess',
     'Invoke-AzureCliJson',
     'Get-ActiveAzureContext',
+    'Get-ActiveAzureContextAssessment',
+    'Get-SubscriptionStateAssessment',
     'Get-AccountLocationNames',
     'Test-ExpectedContextMatch',
     'Test-LocationPair',

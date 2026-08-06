@@ -50,6 +50,30 @@ It does not:
 
 The only local write is the generated JSON profile under `.generated/`.
 
+## Failure Handling Model
+
+Expected assessment failures are classified into a structured `NO-GO` profile and do not terminate the script with an unhandled exception.
+
+Examples of expected failures:
+
+- Azure CLI executable unavailable
+- Azure account context unavailable
+- Azure account context JSON invalid or incomplete
+- subscription disabled
+- expected tenant mismatch
+- expected subscription mismatch
+
+Unexpected programming defects are still surfaced as terminating errors after a safe error message is emitted.
+
+When Azure context is unavailable, the generated failure profile uses:
+
+- `tenantId = null`
+- `subscriptionId = null`
+- `maskedTenantId = "<unavailable>"`
+- `maskedSubscriptionId = "<unavailable>"`
+
+No synthetic tenant or subscription IDs are generated.
+
 ## Parameters
 
 - `Environment`
@@ -82,15 +106,18 @@ Default values are aligned to the currently proven PowerShell deployment model:
 Live assessment against the current Azure CLI context:
 
 ```powershell
-./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 `
-  -ExpectedTenantId "00000000-0000-0000-0000-000000000000" `
-  -ExpectedSubscriptionId "11111111-1111-1111-1111-111111111111"
+.\automation\onboarding\Invoke-SubscriptionPortabilityAssessment.ps1 `
+    -ExpectedTenantId "<EXPECTED_TENANT_ID>" `
+    -ExpectedSubscriptionId "<EXPECTED_SUBSCRIPTION_ID>" `
+    -PassThru
 ```
 
 Offline dry run for local validation:
 
 ```powershell
-./automation/onboarding/Invoke-SubscriptionPortabilityAssessment.ps1 -Offline -PassThru
+.\automation\onboarding\Invoke-SubscriptionPortabilityAssessment.ps1 `
+    -Offline `
+    -PassThru
 ```
 
 ## GO / NO-GO Meaning
@@ -108,12 +135,34 @@ Offline dry run for local validation:
 
 Warnings do not block `GO`, but they must be reviewed.
 
+## Blocker Codes
+
+Stable blocker code prefixes are included in blocker entries:
+
+- `AzureCliUnavailable`
+- `AzureContextUnavailable`
+- `AzureContextInvalid`
+- `SubscriptionDisabled`
+- `TenantMismatch`
+- `SubscriptionMismatch`
+
+Additional `NotVerifiable` blocker codes can appear for dependent checks when context is unavailable.
+
+## Azure CLI Stream Handling
+
+- stdout and stderr are captured independently.
+- JSON parsing is performed from stdout only.
+- stderr warnings do not invalidate valid stdout JSON.
+- non-zero exit codes, empty stdout, and invalid JSON are classified as structured failures.
+- Azure CLI arguments are passed as argument arrays without `Invoke-Expression`.
+
 ## Generated Profile Schema
 
 The profile JSON contains:
 
 - `schemaVersion`
 - `generatedAtUtc`
+- `assessmentOutcomeType` (`Approved` or `Failure`)
 - `environment`
 - `tenantId`
 - `subscriptionId`
@@ -154,6 +203,8 @@ Capability 2 remains responsible for:
 - persistent CI variables or secrets
 - OIDC identity provisioning
 - Terraform workflow execution
+
+Optional strict CI gate behavior (for example a future `FailOnNoGo` exit-code mode) is intentionally deferred to Terraform CI/CD capability work.
 
 ## Future Five-Minute Migration Workflow
 

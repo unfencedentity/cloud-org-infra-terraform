@@ -98,10 +98,6 @@ $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'SubscriptionPortability.
 Import-Module $modulePath -Force
 
 try {
-    if (-not $Offline -and -not (Get-Command az -ErrorAction SilentlyContinue)) {
-        throw 'Azure CLI is required for live assessments. Install Azure CLI or use -Offline for dry-run validation.'
-    }
-
     $resolvedOutputPath = Resolve-AssessmentOutputPath -Environment $Environment -OutputPath $OutputPath
     $providerDefinitions = Get-RequiredProviderDefinitions
 
@@ -126,33 +122,61 @@ try {
         $appServiceSkuResult = New-AssessmentResult -Name 'AppServiceSku' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure App Service SKU availability.'
         $quotaResult = New-AssessmentResult -Name 'ComputeQuota' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure compute quota usage.'
         $subscriptionStateResult = New-AssessmentResult -Name 'SubscriptionState' -Status 'NotVerifiable' -Message 'Offline mode does not query Azure subscription state.'
+        $contextAvailabilityResult = New-AssessmentResult -Name 'AzureContext' -Status 'NotVerifiable' -Code 'AzureContextOffline' -Message 'Offline mode does not query Azure account context.'
     }
     else {
-        $context = Get-ActiveAzureContext
-        $expectedContextResults = @(
-            Test-ExpectedContextMatch -Context $context -ExpectedTenantId $ExpectedTenantId -ExpectedSubscriptionId $ExpectedSubscriptionId
-        )
+        $contextAssessment = Get-ActiveAzureContextAssessment
+        $context = $contextAssessment.Context
+        $contextAvailabilityResult = $contextAssessment.Result
 
-        $subscriptionStateStatus = if ($context.state -eq 'Enabled') { 'Passed' } else { 'Blocked' }
-        $subscriptionStateMessage = if ($context.state -eq 'Enabled') { 'Active subscription is enabled.' } else { "Active subscription state is '$($context.state)'." }
-        $subscriptionStateResult = New-AssessmentResult -Name 'SubscriptionState' -Status $subscriptionStateStatus -Message $subscriptionStateMessage
+        if ($contextAvailabilityResult.status -eq 'Passed') {
+            $expectedContextResults = @(
+                Test-ExpectedContextMatch -Context $context -ExpectedTenantId $ExpectedTenantId -ExpectedSubscriptionId $ExpectedSubscriptionId
+            )
+            $subscriptionStateResult = Get-SubscriptionStateAssessment -Context $context
 
-        $locations = Get-AccountLocationNames
-        $regionResults = @(
-            Test-LocationPair -RegionCode $WorkloadRegionCode -Location $WorkloadLocation -AvailableLocations $locations -Label 'Workload'
-            Test-LocationPair -RegionCode $MonitoringRegionCode -Location $MonitoringLocation -AvailableLocations $locations -Label 'Monitoring'
-        )
+            $locations = Get-AccountLocationNames
+            $regionResults = @(
+                Test-LocationPair -RegionCode $WorkloadRegionCode -Location $WorkloadLocation -AvailableLocations $locations -Label 'Workload'
+                Test-LocationPair -RegionCode $MonitoringRegionCode -Location $MonitoringLocation -AvailableLocations $locations -Label 'Monitoring'
+            )
 
-        $providerResults = Get-ProviderRegistrationResults -ProviderDefinitions $providerDefinitions
-        $resourceTypeResults = Get-ProviderResourceTypeLocationResults -ProviderDefinitions $providerDefinitions -WorkloadLocation $WorkloadLocation -MonitoringLocation $MonitoringLocation
-        $vmSkuResult = Get-VmSkuAssessment -Location $WorkloadLocation -VmSize $VmSize
-        $appServiceSkuResult = Get-AppServiceSkuAssessment -Location $WorkloadLocation -AppServiceSku $AppServiceSku
-        $quotaResult = Get-ComputeQuotaAssessment -Location $WorkloadLocation -VmSkuMetadata $vmSkuResult.data
+            $providerResults = Get-ProviderRegistrationResults -ProviderDefinitions $providerDefinitions
+            $resourceTypeResults = Get-ProviderResourceTypeLocationResults -ProviderDefinitions $providerDefinitions -WorkloadLocation $WorkloadLocation -MonitoringLocation $MonitoringLocation
+            $vmSkuResult = Get-VmSkuAssessment -Location $WorkloadLocation -VmSize $VmSize
+            $appServiceSkuResult = Get-AppServiceSkuAssessment -Location $WorkloadLocation -AppServiceSku $AppServiceSku
+            $quotaResult = Get-ComputeQuotaAssessment -Location $WorkloadLocation -VmSkuMetadata $vmSkuResult.data
+        }
+        else {
+            $expectedContextResults = @()
+            $subscriptionStateResult = New-AssessmentResult -Name 'SubscriptionState' -Status 'NotVerifiable' -Code 'SubscriptionStateUnknown' -Message 'Subscription state cannot be verified because the Azure account context is unavailable.'
+            $providerResults = @($providerDefinitions | ForEach-Object {
+                New-AssessmentResult -Name $_.Namespace -Status 'NotVerifiable' -Code 'ProviderStateUnavailable' -Message 'Provider registration cannot be verified because the Azure account context is unavailable.'
+            })
+            $regionResults = @(
+                New-AssessmentResult -Name 'WorkloadLocation' -Status 'NotVerifiable' -Code 'LocationCatalogUnavailable' -Message 'Workload location cannot be verified because the Azure account context is unavailable.'
+                New-AssessmentResult -Name 'MonitoringLocation' -Status 'NotVerifiable' -Code 'LocationCatalogUnavailable' -Message 'Monitoring location cannot be verified because the Azure account context is unavailable.'
+            )
+            $resourceTypeResults = @($providerDefinitions | ForEach-Object {
+                foreach ($resourceType in $_.ResourceTypes) {
+                    New-AssessmentResult -Name ("{0}/{1}" -f $_.Namespace, $resourceType) -Status 'NotVerifiable' -Code 'ProviderResourceTypeUnavailable' -Message 'Resource type metadata cannot be verified because the Azure account context is unavailable.'
+                }
+            })
+            $vmSkuResult = New-AssessmentResult -Name 'VmSku' -Status 'NotVerifiable' -Code 'VmSkuUnavailable' -Message 'VM SKU availability cannot be verified because the Azure account context is unavailable.'
+            $appServiceSkuResult = New-AssessmentResult -Name 'AppServiceSku' -Status 'NotVerifiable' -Code 'AppServiceSkuUnavailable' -Message 'App Service SKU availability cannot be verified because the Azure account context is unavailable.'
+            $quotaResult = New-AssessmentResult -Name 'ComputeQuota' -Status 'NotVerifiable' -Code 'ComputeQuotaUnavailable' -Message 'Compute quota cannot be verified because the Azure account context is unavailable.'
+        }
     }
 
-    $proposedNames = New-PortableNameSet -TenantId $context.tenantId -SubscriptionId $context.id -Environment $Environment -WorkloadRegionCode $WorkloadRegionCode
+    if ([string]::IsNullOrWhiteSpace($context.tenantId) -or [string]::IsNullOrWhiteSpace($context.id)) {
+        $proposedNames = New-PortableNameSetForFailure -Environment $Environment -WorkloadRegionCode $WorkloadRegionCode
+    }
+    else {
+        $proposedNames = New-PortableNameSet -TenantId $context.tenantId -SubscriptionId $context.id -Environment $Environment -WorkloadRegionCode $WorkloadRegionCode
+    }
 
     $allResults = @(
+        $contextAvailabilityResult
         $expectedContextResults
         $subscriptionStateResult
         $providerResults
@@ -206,6 +230,6 @@ try {
 }
 catch {
     $message = $_.Exception.Message
-    Write-Error $message
+    Write-Error ("Unexpected script defect encountered: {0}" -f $message)
     throw
 }

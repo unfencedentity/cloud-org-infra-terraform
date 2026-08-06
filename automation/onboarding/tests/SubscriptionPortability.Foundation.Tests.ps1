@@ -105,4 +105,163 @@ Describe 'SubscriptionPortability.Foundation' {
 
         $json | Should Not Match 'client_secret|token|private_key|ssh-rsa'
     }
+
+    It 'marks expected tenant mismatch as NO-GO with TenantMismatch code' {
+        $context = [pscustomobject]@{
+            tenantId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+            id       = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        }
+
+        $results = @(Test-ExpectedContextMatch -Context $context -ExpectedTenantId 'cccccccc-cccc-cccc-cccc-cccccccccccc')
+        $outcome = Get-AssessmentOutcome -Results $results
+
+        $results[0].status | Should Be 'Blocked'
+        $results[0].code | Should Be 'TenantMismatch'
+        $outcome.overallStatus | Should Be 'NO-GO'
+        $outcome.blockers[0] | Should Match '\[TenantMismatch\]'
+    }
+
+    It 'marks expected subscription mismatch as NO-GO with SubscriptionMismatch code' {
+        $context = [pscustomobject]@{
+            tenantId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+            id       = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        }
+
+        $results = @(Test-ExpectedContextMatch -Context $context -ExpectedSubscriptionId 'cccccccc-cccc-cccc-cccc-cccccccccccc')
+        $outcome = Get-AssessmentOutcome -Results $results
+
+        $results[0].status | Should Be 'Blocked'
+        $results[0].code | Should Be 'SubscriptionMismatch'
+        $outcome.overallStatus | Should Be 'NO-GO'
+        $outcome.blockers[0] | Should Match '\[SubscriptionMismatch\]'
+    }
+
+    It 'marks disabled subscription state as NO-GO with SubscriptionDisabled code' {
+        $context = [pscustomobject]@{ state = 'Disabled' }
+        $stateResult = Get-SubscriptionStateAssessment -Context $context
+        $outcome = Get-AssessmentOutcome -Results @($stateResult)
+
+        $stateResult.status | Should Be 'Blocked'
+        $stateResult.code | Should Be 'SubscriptionDisabled'
+        $outcome.overallStatus | Should Be 'NO-GO'
+    }
+
+    It 'parses valid stdout JSON even when stderr contains a warning' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 0
+                StdOut   = '{"tenantId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}'
+                StdErr   = 'WARNING: using cached profile'
+                Success  = $true
+            }
+        }
+
+        $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json') -ProcessInvoker $processInvoker -AllowFailure
+        $result.Success | Should Be $true
+        $result.ParsedJson.id | Should Be 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    }
+
+    It 'returns structured failure for non-zero Azure CLI exit code' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 2
+                StdOut   = ''
+                StdErr   = 'ERROR: command failed'
+                Success  = $false
+            }
+        }
+
+        $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json') -ProcessInvoker $processInvoker -AllowFailure
+        $result.Success | Should Be $false
+        $result.FailureKind | Should Be 'NonZeroExit'
+        $result.SafeMessage | Should Match 'non-zero exit code'
+    }
+
+    It 'returns structured failure for empty stdout on zero exit code' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 0
+                StdOut   = ''
+                StdErr   = ''
+                Success  = $true
+            }
+        }
+
+        $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json') -ProcessInvoker $processInvoker -AllowFailure
+        $result.Success | Should Be $false
+        $result.FailureKind | Should Be 'EmptyStdOut'
+    }
+
+    It 'returns structured failure for invalid JSON stdout' {
+        $processInvoker = {
+            param($Arguments)
+            [pscustomobject]@{
+                ExitCode = 0
+                StdOut   = 'not-json'
+                StdErr   = ''
+                Success  = $true
+            }
+        }
+
+        $result = Invoke-AzureCliJson -Arguments @('account', 'show', '-o', 'json') -ProcessInvoker $processInvoker -AllowFailure
+        $result.Success | Should Be $false
+        $result.FailureKind | Should Be 'InvalidJson'
+    }
+
+    It 'serializes a failure profile with unavailable IDs as valid JSON' {
+        $context = New-UnavailableAzureContext
+        $names = New-PortableNameSetForFailure -Environment 'dev' -WorkloadRegionCode 'deu'
+        $profileParams = @{
+            Environment          = 'dev'
+            Context              = $context
+            WorkloadLocation     = 'denmarkeast'
+            WorkloadRegionCode   = 'deu'
+            MonitoringLocation   = 'swedencentral'
+            MonitoringRegionCode = 'swe'
+            AddressSpace         = '10.0.0.0/16'
+            VmSize               = 'Standard_B1s'
+            AppServiceSku        = 'B1'
+            ProposedNames        = $names
+            ProviderResults      = @()
+            RegionResults        = @()
+            SkuResults           = @()
+            QuotaResults         = @()
+            OverallStatus        = 'NO-GO'
+            Blockers             = @('[AzureContextUnavailable] AzureContext: context unavailable')
+            Warnings             = @()
+        }
+
+        $profile = New-SubscriptionPortabilityProfile @profileParams
+        $profile.tenantId | Should Be $null
+        $profile.subscriptionId | Should Be $null
+        $profile.maskedTenantId | Should Be '<unavailable>'
+        $profile.maskedSubscriptionId | Should Be '<unavailable>'
+        $profile.assessmentOutcomeType | Should Be 'Failure'
+
+        { $profile | ConvertTo-Json -Depth 10 } | Should Not Throw
+    }
+
+    It 'classifies unavailable context as NO-GO without throwing' {
+        Mock -ModuleName SubscriptionPortability.Foundation Get-Command { $null }
+
+        $assessment = Get-ActiveAzureContextAssessment
+        $assessment.Result.status | Should Be 'Blocked'
+        $assessment.Result.code | Should Be 'AzureCliUnavailable'
+
+        $outcome = Get-AssessmentOutcome -Results @($assessment.Result)
+        $outcome.overallStatus | Should Be 'NO-GO'
+    }
+
+    It 'failed context results can never aggregate to GO' {
+        $results = @(
+            New-AssessmentResult -Name 'AzureContext' -Status 'Blocked' -Code 'AzureContextUnavailable' -Message 'No context'
+            New-AssessmentResult -Name 'ComputeQuota' -Status 'Warning' -Message 'Advisory only'
+        )
+
+        $outcome = Get-AssessmentOutcome -Results $results
+        $outcome.overallStatus | Should Be 'NO-GO'
+    }
 }
