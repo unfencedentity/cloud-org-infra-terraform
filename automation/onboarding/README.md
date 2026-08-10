@@ -101,6 +101,11 @@ Default values are aligned to the currently proven PowerShell deployment model:
 - `VmSize = Standard_B1s`
 - `AppServiceSku = B1`
 
+Validation is intentionally strict for the portable assessment inputs:
+
+- `ExpectedTenantId` and `ExpectedSubscriptionId` accept only canonical GUIDs in `8-4-4-4-12` hexadecimal form when supplied.
+- `AddressSpace` must be a valid IPv4 CIDR block such as `10.0.0.0/16`.
+
 ## Examples
 
 Live assessment against the current Azure CLI context:

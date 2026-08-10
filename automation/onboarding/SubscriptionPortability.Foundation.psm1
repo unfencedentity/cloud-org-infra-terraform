@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-$script:ErrorActionPreference = 'Stop'
+$script:ErrorActionPreference = "Stop"
 
 $script:KnownRegionCodeMap = [ordered]@{
     deu = 'denmarkeast'
@@ -1092,7 +1092,7 @@ function Write-AssessmentSummary {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [object]$Profile,
+        [object]$AssessmentProfile,
 
         [Parameter(Mandatory = $true)]
         [object]$Context,
@@ -1101,32 +1101,32 @@ function Write-AssessmentSummary {
         [string]$OutputPath
     )
 
-    $providerSummary = @($Profile.providerResults | Group-Object -Property status | Sort-Object Name | ForEach-Object { "{0}={1}" -f $_.Name, $_.Count }) -join ', '
+    $providerSummary = @($AssessmentProfile.providerResults | Group-Object -Property status | Sort-Object Name | ForEach-Object { "{0}={1}" -f $_.Name, $_.Count }) -join ', '
 
     Write-Information ("Active account: {0} ({1})" -f $Context.user.name, $Context.user.type) -InformationAction Continue
-    Write-Information ("Tenant: {0}" -f $Profile.maskedTenantId) -InformationAction Continue
-    Write-Information ("Subscription: {0}" -f $Profile.maskedSubscriptionId) -InformationAction Continue
-    Write-Information ("Workload: {0} [{1}]" -f $Profile.workloadLocation, $Profile.workloadRegionCode) -InformationAction Continue
-    Write-Information ("Monitoring: {0} [{1}]" -f $Profile.monitoringLocation, $Profile.monitoringRegionCode) -InformationAction Continue
-    Write-Information ("VM SKU: {0}; App Service SKU: {1}" -f $Profile.vmSize, $Profile.appServiceSku) -InformationAction Continue
+    Write-Information ("Tenant: {0}" -f $AssessmentProfile.maskedTenantId) -InformationAction Continue
+    Write-Information ("Subscription: {0}" -f $AssessmentProfile.maskedSubscriptionId) -InformationAction Continue
+    Write-Information ("Workload: {0} [{1}]" -f $AssessmentProfile.workloadLocation, $AssessmentProfile.workloadRegionCode) -InformationAction Continue
+    Write-Information ("Monitoring: {0} [{1}]" -f $AssessmentProfile.monitoringLocation, $AssessmentProfile.monitoringRegionCode) -InformationAction Continue
+    Write-Information ("VM SKU: {0}; App Service SKU: {1}" -f $AssessmentProfile.vmSize, $AssessmentProfile.appServiceSku) -InformationAction Continue
     Write-Information ("Provider status: {0}" -f $providerSummary) -InformationAction Continue
 
-    if ($Profile.blockers.Count -gt 0) {
+    if ($AssessmentProfile.blockers.Count -gt 0) {
         Write-Information 'Blockers:' -InformationAction Continue
-        foreach ($blocker in $Profile.blockers) {
+        foreach ($blocker in $AssessmentProfile.blockers) {
             Write-Information ("- {0}" -f $blocker) -InformationAction Continue
         }
     }
 
-    if ($Profile.warnings.Count -gt 0) {
+    if ($AssessmentProfile.warnings.Count -gt 0) {
         Write-Information 'Warnings:' -InformationAction Continue
-        foreach ($warning in $Profile.warnings) {
+        foreach ($warning in $AssessmentProfile.warnings) {
             Write-Information ("- {0}" -f $warning) -InformationAction Continue
         }
     }
 
     Write-Information ("Profile output: {0}" -f $OutputPath) -InformationAction Continue
-    Write-Information ("Final decision: {0}" -f $Profile.overallStatus) -InformationAction Continue
+    Write-Information ("Final decision: {0}" -f $AssessmentProfile.overallStatus) -InformationAction Continue
 }
 
 Export-ModuleMember -Function @(
