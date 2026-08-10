@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\SubscriptionPortability.Foundation.psm1'
+$scriptPath = Join-Path -Path $PSScriptRoot -ChildPath '..\Invoke-SubscriptionPortabilityAssessment.ps1'
 Import-Module $modulePath -Force
 
 Describe 'SubscriptionPortability.Foundation' {
@@ -99,11 +100,110 @@ Describe 'SubscriptionPortability.Foundation' {
             Warnings             = @()
         }
 
-        $profile = New-SubscriptionPortabilityProfile @profileParams
+        $assessmentProfile = New-SubscriptionPortabilityProfile @profileParams
 
-        $json = $profile | ConvertTo-Json -Depth 10
+        $json = $assessmentProfile | ConvertTo-Json -Depth 10
 
         $json | Should Not Match 'client_secret|token|private_key|ssh-rsa'
+    }
+
+    It 'accepts a canonical tenant id in offline script execution' {
+        $outputPath = Join-Path $env:TEMP ('subscription-portability-tenant-' + [guid]::NewGuid().ToString() + '.json')
+
+        try {
+            { & $scriptPath -Offline -ExpectedTenantId '12345678-1234-1234-1234-123456789abc' -OutputPath $outputPath | Out-Null } | Should Not Throw
+        }
+        finally {
+            if (Test-Path $outputPath) {
+                Remove-Item -Path $outputPath -Force
+            }
+        }
+    }
+
+    It 'accepts a canonical subscription id in offline script execution' {
+        $outputPath = Join-Path $env:TEMP ('subscription-portability-subscription-' + [guid]::NewGuid().ToString() + '.json')
+
+        try {
+            { & $scriptPath -Offline -ExpectedSubscriptionId '87654321-4321-4321-4321-cba987654321' -OutputPath $outputPath | Out-Null } | Should Not Throw
+        }
+        finally {
+            if (Test-Path $outputPath) {
+                Remove-Item -Path $outputPath -Force
+            }
+        }
+    }
+
+    It 'rejects a hyphen-only tenant id' {
+        $threw = $false
+        try {
+            & $scriptPath -Offline -ExpectedTenantId '------------------------------------' -ErrorAction Stop | Out-Null
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $true
+    }
+
+    It 'rejects an invalid subscription id' {
+        $threw = $false
+        try {
+            & $scriptPath -Offline -ExpectedSubscriptionId 'not-a-guid' -ErrorAction Stop | Out-Null
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $true
+    }
+
+    It 'accepts the default IPv4 CIDR in offline script execution' {
+        $outputPath = Join-Path $env:TEMP ('subscription-portability-cidr-' + [guid]::NewGuid().ToString() + '.json')
+
+        try {
+            { & $scriptPath -Offline -OutputPath $outputPath | Out-Null } | Should Not Throw
+        }
+        finally {
+            if (Test-Path $outputPath) {
+                Remove-Item -Path $outputPath -Force
+            }
+        }
+    }
+
+    It 'rejects an impossible IPv4 CIDR' {
+        $threw = $false
+        try {
+            & $scriptPath -Offline -AddressSpace '999.999.999.999/99' -ErrorAction Stop | Out-Null
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $true
+    }
+
+    It 'rejects an oversized IPv4 prefix' {
+        $threw = $false
+        try {
+            & $scriptPath -Offline -AddressSpace '10.0.0.0/33' -ErrorAction Stop | Out-Null
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $true
+    }
+
+    It 'rejects an IPv6 CIDR' {
+        $threw = $false
+        try {
+            & $scriptPath -Offline -AddressSpace '2001:db8::/32' -ErrorAction Stop | Out-Null
+        }
+        catch {
+            $threw = $true
+        }
+
+        $threw | Should Be $true
     }
 
     It 'marks expected tenant mismatch as NO-GO with TenantMismatch code' {
@@ -359,14 +459,14 @@ Describe 'SubscriptionPortability.Foundation' {
             Warnings             = @()
         }
 
-        $profile = New-SubscriptionPortabilityProfile @profileParams
-        $profile.tenantId | Should Be $null
-        $profile.subscriptionId | Should Be $null
-        $profile.maskedTenantId | Should Be '<unavailable>'
-        $profile.maskedSubscriptionId | Should Be '<unavailable>'
-        $profile.assessmentOutcomeType | Should Be 'Failure'
+        $assessmentProfile = New-SubscriptionPortabilityProfile @profileParams
+        $assessmentProfile.tenantId | Should Be $null
+        $assessmentProfile.subscriptionId | Should Be $null
+        $assessmentProfile.maskedTenantId | Should Be '<unavailable>'
+        $assessmentProfile.maskedSubscriptionId | Should Be '<unavailable>'
+        $assessmentProfile.assessmentOutcomeType | Should Be 'Failure'
 
-        { $profile | ConvertTo-Json -Depth 10 } | Should Not Throw
+        { $assessmentProfile | ConvertTo-Json -Depth 10 } | Should Not Throw
     }
 
     It 'classifies unavailable context as NO-GO without throwing' {

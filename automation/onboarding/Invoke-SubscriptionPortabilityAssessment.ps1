@@ -74,7 +74,39 @@ param(
     [ValidatePattern('^[a-z0-9]{2,8}$')]
     [string]$MonitoringRegionCode = 'swe',
 
-    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$')]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_)) {
+            throw 'AddressSpace must be specified as an IPv4 CIDR block such as 10.0.0.0/16.'
+        }
+
+        $cidrParts = $_.Trim().Split('/')
+        if ($cidrParts.Count -ne 2) {
+            throw 'AddressSpace must contain exactly one IPv4 address and one prefix separated by /.'
+        }
+
+        $ipText = $cidrParts[0].Trim()
+        $prefixText = $cidrParts[1].Trim()
+
+        $ipAddress = $null
+        if (-not [System.Net.IPAddress]::TryParse($ipText, [ref]$ipAddress)) {
+            throw "AddressSpace must start with a valid IPv4 address. '$ipText' is not valid."
+        }
+
+        if ($ipAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            throw "AddressSpace must use an IPv4 address. '$ipText' is IPv6."
+        }
+
+        $prefix = 0
+        if (-not [int]::TryParse($prefixText, [ref]$prefix)) {
+            throw "AddressSpace prefix must be an integer between 0 and 32. '$prefixText' is not valid."
+        }
+
+        if ($prefix -lt 0 -or $prefix -gt 32) {
+            throw "AddressSpace prefix must be between 0 and 32 inclusive. '$prefix' is not valid."
+        }
+
+        $true
+    })]
     [string]$AddressSpace = '10.0.0.0/16',
 
     [ValidateNotNullOrEmpty()]
@@ -83,10 +115,30 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$AppServiceSku = 'B1',
 
-    [ValidatePattern('^[0-9a-fA-F-]{36}$')]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_)) {
+            return $true
+        }
+
+        if ($_ -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+            throw 'ExpectedTenantId must be a canonical GUID in 8-4-4-4-12 hexadecimal format.'
+        }
+
+        $true
+    })]
     [string]$ExpectedTenantId,
 
-    [ValidatePattern('^[0-9a-fA-F-]{36}$')]
+    [ValidateScript({
+        if ([string]::IsNullOrWhiteSpace($_)) {
+            return $true
+        }
+
+        if ($_ -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+            throw 'ExpectedSubscriptionId must be a canonical GUID in 8-4-4-4-12 hexadecimal format.'
+        }
+
+        $true
+    })]
     [string]$ExpectedSubscriptionId,
 
     [string]$OutputPath,
@@ -97,7 +149,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'SubscriptionPortability.Foundation.psm1'
 Import-Module $modulePath -Force
@@ -224,7 +276,7 @@ try {
         Warnings             = $outcome.warnings
     }
 
-    $profile = New-SubscriptionPortabilityProfile @profileParams
+    $assessmentProfile = New-SubscriptionPortabilityProfile @profileParams
 
     $outputDirectory = Split-Path -Path $resolvedOutputPath -Parent
     if (-not [string]::IsNullOrWhiteSpace($outputDirectory) -and -not (Test-Path $outputDirectory)) {
@@ -234,13 +286,13 @@ try {
     }
 
     if ($PSCmdlet.ShouldProcess($resolvedOutputPath, 'Write onboarding profile JSON')) {
-        $profile | ConvertTo-Json -Depth 12 | Set-Content -Path $resolvedOutputPath -Encoding utf8
+        $assessmentProfile | ConvertTo-Json -Depth 12 | Set-Content -Path $resolvedOutputPath -Encoding utf8
     }
 
-    Write-AssessmentSummary -Profile $profile -Context $context -OutputPath $resolvedOutputPath
+    Write-AssessmentSummary -AssessmentProfile $assessmentProfile -Context $context -OutputPath $resolvedOutputPath
 
     if ($PassThru) {
-        return $profile
+        return $assessmentProfile
     }
 }
 catch {
