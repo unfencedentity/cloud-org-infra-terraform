@@ -149,7 +149,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath 'SubscriptionPortability.Foundation.psm1'
 Import-Module $modulePath -Force
