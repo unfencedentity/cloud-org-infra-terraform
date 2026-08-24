@@ -489,4 +489,132 @@ Describe 'SubscriptionPortability.Foundation' {
         $outcome = Get-AssessmentOutcome -Results $results
         $outcome.overallStatus | Should Be 'NO-GO'
     }
+
+    It 'returns a structured AzureCliUnavailable failure when Azure CLI cannot be resolved' {
+        Mock -ModuleName SubscriptionPortability.Foundation Get-Command { $null }
+
+        $result = Invoke-AzureCliProcess -Arguments @('version', '--output', 'json')
+        $result.Success | Should Be $false
+        $result.ExitCode | Should Be 127
+        $result.StdErr | Should Match 'not found'
+    }
+
+    InModuleScope SubscriptionPortability.Foundation {
+        It 'resolves the Azure CLI command to its full Source path' {
+            Mock Get-Command { [pscustomobject]@{ Name = 'az'; Source = 'C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd' } }
+
+            $resolved = Resolve-AzureCliCommandPath
+            $resolved | Should Be 'C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd'
+        }
+
+        It 'resolves to null when Azure CLI is not found' {
+            Mock Get-Command { $null }
+
+            Resolve-AzureCliCommandPath | Should Be $null
+        }
+
+        It 'resolves to null when the resolved command has no Source' {
+            Mock Get-Command { [pscustomobject]@{ Name = 'az'; Source = '' } }
+
+            Resolve-AzureCliCommandPath | Should Be $null
+        }
+    }
+
+    It 'launches a resolved Windows az.cmd and preserves arguments containing cmd.exe metacharacters literally, with no second command executed' {
+        $fakeCliDir = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) '.native-argv-probe'
+        $fakeCliBinDir = Join-Path $fakeCliDir 'wbin'
+        New-Item -Path $fakeCliBinDir -ItemType Directory -Force | Out-Null
+        $outputPath = Join-Path $fakeCliDir 'output.json'
+        $injectedMarkerPath = Join-Path $fakeCliDir 'injected.txt'
+        $captureSourcePath = Join-Path $fakeCliDir 'capture.cs'
+        $nativePythonPath = Join-Path $fakeCliDir 'python.exe'
+        $azCmdPath = Join-Path $fakeCliBinDir 'az.cmd'
+
+        $captureSource = @'
+using System;
+using System.IO;
+using System.Text;
+
+internal static class ArgumentCapture
+{
+    private static string Escape(string value)
+    {
+        var builder = new StringBuilder(value.Length + 2);
+        foreach (var character in value)
+        {
+            switch (character)
+            {
+                case '\\': builder.Append("\\\\"); break;
+                case '"': builder.Append("\\\""); break;
+                case '\r': builder.Append("\\r"); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\t': builder.Append("\\t"); break;
+                default: builder.Append(character); break;
+            }
+        }
+        return builder.ToString();
+    }
+
+    public static void Main(string[] arguments)
+    {
+        var outputPath = Environment.GetEnvironmentVariable("FAKE_AZ_OUTPUT_PATH");
+        var json = new StringBuilder("[");
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            if (index > 0) json.Append(',');
+            json.Append('"').Append(Escape(arguments[index])).Append('"');
+        }
+        json.Append(']');
+        File.WriteAllText(outputPath, json.ToString(), Encoding.UTF8);
+    }
+}
+'@
+        Set-Content -Path $captureSourcePath -Value $captureSource -Encoding ascii
+        & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:exe /out:$nativePythonPath $captureSourcePath
+        $LASTEXITCODE | Should Be 0
+        $env:FAKE_AZ_OUTPUT_PATH = $outputPath
+        $env:FAKE_AZ_CMD_PATH = $azCmdPath
+        Set-Content -Path $azCmdPath -Value '@echo off' , '"%~dp0..\python.exe" -IBm azure.cli %*' -Encoding ascii
+
+        $originalPath = $env:PATH
+        try {
+            $env:PATH = "$fakeCliBinDir;$originalPath"
+            Mock -ModuleName SubscriptionPortability.Foundation Get-Command { [pscustomobject]@{ Name = 'az'; Source = $env:FAKE_AZ_CMD_PATH } }
+
+            $testArguments = @(
+                'plain',
+                'has spaces',
+                'amp&value',
+                'pipe|value',
+                'redirect>value',
+                'redirect<value',
+                'percent%value%',
+                'caret^value',
+                'bang!value',
+                'quote"value',
+                'safe & echo INJECTED > "' + $injectedMarkerPath + '"'
+            )
+
+            $result = Invoke-AzureCliProcess -Arguments $testArguments
+            $result.Success | Should Be $true
+            $result.ExitCode | Should Be 0
+            (Test-Path $injectedMarkerPath) | Should Be $false
+            $result.StdOut | Should Not Match 'INJECTED'
+            $result.StdErr | Should Not Match 'INJECTED'
+
+            (Test-Path $outputPath) | Should Be $true
+            $capturedArguments = @(Get-Content -Path $outputPath -Raw | ConvertFrom-Json)
+            $expectedArguments = @('-IBm', 'azure.cli') + $testArguments
+            $capturedArguments.Count | Should Be $expectedArguments.Count
+            for ($i = 0; $i -lt $expectedArguments.Count; $i++) {
+                $capturedArguments[$i] | Should Be $expectedArguments[$i]
+            }
+        }
+        finally {
+            Remove-Item Env:FAKE_AZ_CMD_PATH -ErrorAction SilentlyContinue
+            Remove-Item Env:FAKE_AZ_OUTPUT_PATH -ErrorAction SilentlyContinue
+            $env:PATH = $originalPath
+            Remove-Item -Path $fakeCliDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }

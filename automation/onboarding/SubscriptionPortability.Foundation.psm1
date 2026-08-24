@@ -409,6 +409,58 @@ function New-UnavailableAzureContext {
     }
 }
 
+function Resolve-AzureCliCommandPath {
+    [CmdletBinding()]
+    param()
+
+    $command = Get-Command az -ErrorAction SilentlyContinue
+    if ($null -eq $command -or [string]::IsNullOrWhiteSpace($command.Source)) {
+        return $null
+    }
+
+    return $command.Source
+}
+
+function ConvertTo-CmdExeEscapedToken {
+    # Escapes a single token so it survives cmd.exe's /c re-parse as one literal value.
+    # Mirrors the algorithm cross-spawn uses to safely invoke Windows .cmd/.bat files
+    # (https://github.com/moxystudio/node-cross-spawn/blob/master/lib/util/escape.js),
+    # which was hardened for exactly this class of cmd.exe argument-injection bug
+    # (see Node.js CVE-2024-27980).
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value,
+
+        [switch]$AsCommand
+    )
+
+    # Every character cmd.exe treats specially while re-parsing the /c line, including
+    # whitespace: once the quote characters below are caret-escaped they stop acting as
+    # real quotes to cmd.exe, so unescaped spaces would otherwise split one argument
+    # into several.
+    $metaCharsPattern = '[()\[\]%!^"`<>&|;, *?]'
+
+    if ($AsCommand) {
+        # The executable/script path is not quoted; caret-escaping its own metacharacters
+        # (including any spaces) is sufficient to keep it a single token.
+        return [regex]::Replace($Value, $metaCharsPattern, '^$0')
+    }
+
+    # Standard Win32/CRT argv quoting: double backslash runs that precede a quote or the end of string,
+    # escape embedded quotes, then wrap the whole token in quotes.
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\*)$', '$1$1')
+    $escaped = '"' + $escaped + '"'
+
+    # cmd.exe still re-parses metacharacters inside a quoted /c line (this is the actual injection
+    # surface, not just argument-boundary splitting), so caret-escape them too. Quote characters are
+    # escaped as well: cmd.exe unescapes '^"' back to a literal '"' when it builds the line it runs, so
+    # the quoting added above survives intact as literal text for the process that finally parses argv.
+    return [regex]::Replace($escaped, $metaCharsPattern, '^$0')
+}
+
 function Invoke-AzureCliProcess {
     [CmdletBinding()]
     param(
@@ -416,7 +468,9 @@ function Invoke-AzureCliProcess {
         [string[]]$Arguments
     )
 
-    if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+    # 'az' is literal text on Windows Get-Command resolves it to az.cmd, but ProcessStartInfo needs the resolved path.
+    $resolvedPath = Resolve-AzureCliCommandPath
+    if ($null -eq $resolvedPath) {
         return [pscustomobject]@{
             ExitCode = 127
             StdOut   = ''
@@ -428,14 +482,36 @@ function Invoke-AzureCliProcess {
     $process = $null
     try {
         $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-        $startInfo.FileName = 'az'
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         $startInfo.CreateNoWindow = $true
 
-        foreach ($argument in $Arguments) {
-            $null = $startInfo.ArgumentList.Add($argument)
+        $extension = [System.IO.Path]::GetExtension($resolvedPath)
+        if ($extension -ieq '.cmd' -and ([System.IO.Path]::GetFileName($resolvedPath) -ieq 'az.cmd')) {
+            # The installed az.cmd invokes ..\python.exe -IBm azure.cli %*. Launch that native
+            # interpreter directly so cmd.exe never reparses Azure CLI arguments.
+            $cliRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $resolvedPath) '..'))
+            $nativePythonPath = Join-Path $cliRoot 'python.exe'
+            if (-not (Test-Path -LiteralPath $nativePythonPath -PathType Leaf)) {
+                return [pscustomobject]@{
+                    ExitCode = 127
+                    StdOut   = ''
+                    StdErr   = "Azure CLI native interpreter was not found: $nativePythonPath"
+                    Success  = $false
+                }
+            }
+
+            $startInfo.FileName = $nativePythonPath
+            foreach ($argument in @('-IBm', 'azure.cli') + $Arguments) {
+                $null = $startInfo.ArgumentList.Add($argument)
+            }
+        }
+        else {
+            $startInfo.FileName = $resolvedPath
+            foreach ($argument in $Arguments) {
+                $null = $startInfo.ArgumentList.Add($argument)
+            }
         }
 
         $process = New-Object System.Diagnostics.Process
