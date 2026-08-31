@@ -1,5 +1,7 @@
 # cloud-org-infra-terraform
 
+[![Terraform Quality Gate](https://github.com/unfencedentity/cloud-org-infra-terraform/actions/workflows/terraform-quality.yml/badge.svg)](https://github.com/unfencedentity/cloud-org-infra-terraform/actions/workflows/terraform-quality.yml)
+
 Terraform-based Azure landing zone infrastructure for a single organization, with a
 PowerShell-based read-only preflight assessment used before onboarding a new
 tenant or subscription.
@@ -95,6 +97,19 @@ Before onboarding a new tenant or subscription for an environment, run the
 PowerShell preflight assessment described in
 [automation/onboarding/README.md](automation/onboarding/README.md) and confirm
 a `GO` result first.
+
+## Automated Terraform Validation
+
+GitHub Actions validates the Terraform configuration on every push to `develop` and every pull request targeting `main`.
+
+The quality gate runs:
+
+- `terraform fmt -check -recursive`;
+- `terraform init -backend=false -input=false`;
+- `terraform validate -no-color` for `bootstrap/remote-state`;
+- `terraform validate -no-color` for `environments/dev`.
+
+The workflow performs formatting and static configuration validation only. It does not authenticate to Azure or run `terraform plan`, `apply`, or `destroy`.
 
 ## Branch Workflow
 
