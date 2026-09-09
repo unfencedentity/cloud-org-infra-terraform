@@ -73,9 +73,10 @@ The remote state backend is created once per environment scope from
 backend:
 
 1. Copy `bootstrap/remote-state/terraform.tfvars.example` to
-   `bootstrap/remote-state/terraform.tfvars` and populate it with the target
-   resource group name, location, and state container name. This file is
-   git-ignored and must never be committed.
+   `bootstrap/remote-state/terraform.tfvars` and populate it with
+   `environment`, `workload_location`, `workload_region_code`,
+   `instance_number`, and `state_container_name`. This file is git-ignored
+   and must never be committed.
 2. Run `terraform init`, `terraform plan`, and `terraform apply` from
    `bootstrap/remote-state`.
 3. Copy `backend.hcl.example` to `backend.hcl` in the corresponding
@@ -106,6 +107,29 @@ Before onboarding a new tenant or subscription for an environment, run the
 PowerShell preflight assessment described in
 [automation/onboarding/README.md](automation/onboarding/README.md) and confirm
 a `GO` result first.
+
+## Naming and Region Convention
+
+Resource names and tags are generated from `terraform.tfvars` inputs using an
+`Application-Environment-Region-Instance` convention, matching the naming
+concept used by the `cloud-org-infra` PowerShell repository:
+
+- `application`, `environment`, `workload_region_code`, and `instance_number`
+  combine into a name prefix (for example `core-dev-deu-001`), which resource
+  names are built from (for example `rg-core-dev-deu-001`,
+  `vnet-core-dev-deu-001`, `vm-core-dev-deu-001`).
+- `workload_location` (an Azure region display name, e.g. `denmarkeast`) is
+  where workload resources — the VNet, VM, Key Vault, storage account, App
+  Service, etc. — are deployed.
+- `monitoring_location` and `monitoring_region_code` (e.g. `swedencentral` /
+  `swe`) are used only for the Log Analytics workspace and Application
+  Insights, the two monitoring resources whose region can legitimately differ
+  from the workload region.
+- Globally-unique resources (Storage Account, Key Vault, VM computer name)
+  use a hyphen-free, deterministic compact name built from the same inputs to
+  respect Azure naming-length restrictions.
+- Every resource that supports tags receives at least `Application`,
+  `Environment`, `Region`, and `ManagedBy = Terraform`.
 
 ## Automated Terraform Validation
 

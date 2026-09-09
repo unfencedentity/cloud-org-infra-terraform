@@ -1,18 +1,26 @@
 data "azurerm_client_config" "current" {}
 
 locals {
-  storage_account_name = "st${substr(sha1("${data.azurerm_client_config.current.subscription_id}-dev-weu-tfstate"), 0, 22)}"
+  # Application-Environment-Region-Instance naming, matching the cloud-org-infra PowerShell repository convention.
+  # The remote-state backend is not tied to a single application, so "tfstate" is used as a fixed application segment.
+  name_prefix = "tfstate-${var.environment}-${var.workload_region_code}-${var.instance_number}"
+
+  resource_group_name = "rg-${local.name_prefix}"
+
+  # Preserves the original subscription-derived, fully-hashed storage account naming strategy.
+  storage_account_name = "st${substr(sha1("${data.azurerm_client_config.current.subscription_id}-${var.environment}-${var.workload_region_code}-tfstate"), 0, 22)}"
 
   common_tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
+    Application = "tfstate"
+    Environment = var.environment
+    Region      = var.workload_region_code
+    ManagedBy   = "Terraform"
   }
 }
 
 resource "azurerm_resource_group" "remote_state" {
-  name     = var.resource_group_name
-  location = var.location
+  name     = local.resource_group_name
+  location = var.workload_location
   tags     = local.common_tags
 }
 

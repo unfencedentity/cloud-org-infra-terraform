@@ -1,3 +1,5 @@
-location             = "westeurope"
-resource_group_name  = "rg-example-tfstate-weu-001"
-state_container_name = "tfstate"
+environment           = "dev"
+workload_location     = "denmarkeast"
+workload_region_code  = "deu"
+instance_number       = "001"
+state_container_name  = "tfstate"

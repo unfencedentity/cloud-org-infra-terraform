@@ -7,8 +7,8 @@ used before onboarding a tenant or subscription.
 
 ## High-Level Azure Architecture
 
-The `environments/dev` Terraform root deploys a single-region application
-landing zone:
+The `environments/dev` Terraform root deploys an application landing zone
+split across a workload region and a monitoring region:
 
 - A virtual network with dedicated subnets for the application VM, private
   endpoints, and App Service VNet integration (with a `Microsoft.Web/serverFarms`
@@ -22,8 +22,8 @@ landing zone:
 - A storage account reachable only through a private endpoint into the blob
   private DNS zone (public network access and shared-key authentication are
   both disabled).
-- A Log Analytics workspace and Application Insights instance used as
-  diagnostic and monitoring targets.
+- A Log Analytics workspace and Application Insights instance, deployed in
+  the monitoring region, used as diagnostic and monitoring targets.
 - A Recovery Services vault with a daily/weekly/monthly VM backup policy
   protecting the virtual machine.
 - Azure Monitor: an action group (email notification), a VM CPU metric alert,
@@ -54,6 +54,34 @@ a management lock preventing deletion of the state storage account.
   environment-specific, non-public values (resource group names, storage
   account names, keys). They are git-ignored; only the `.tfvars.example` and
   `.hcl.example` templates with placeholder values are tracked.
+
+## Naming and Region Convention
+
+All resource names and tags are derived from `terraform.tfvars` inputs
+(`application`, `environment`, `workload_location`, `workload_region_code`,
+`monitoring_location`, `monitoring_region_code`, `instance_number`) using an
+`Application-Environment-Region-Instance` convention, matching the naming
+concept used by the `cloud-org-infra` PowerShell repository. No environment,
+region, or instance value is hardcoded in `.tf` files.
+
+- Workload resources (VNet, subnets, NSG, VM, Key Vault, storage account, App
+  Service, Recovery Services vault, etc.) are named `<type>-<name_prefix>` and
+  deployed to `workload_location`, where `name_prefix` is
+  `${application}-${environment}-${workload_region_code}-${instance_number}`.
+- Monitoring resources whose region can legitimately differ from the workload
+  (the Log Analytics workspace and Application Insights) are named
+  `<type>-<monitoring_name_prefix>` and deployed to `monitoring_location`,
+  using `monitoring_region_code` in place of `workload_region_code`.
+- Globally-unique or length-restricted resources (Storage Account, Key Vault,
+  the VM's `computer_name`) use a hyphen-free compact variant of
+  `name_prefix`. The `bootstrap/remote-state` storage account additionally
+  keeps its original fully-hashed, subscription-derived name for global
+  uniqueness and to avoid revealing the environment/region in the name.
+- Every resource that supports Azure tags is tagged with at least
+  `Application`, `Environment`, `Region`, and `ManagedBy = Terraform`.
+- `bootstrap/remote-state` uses the same convention with a fixed
+  `Application = "tfstate"` tag, since the remote-state backend is not
+  associated with a single application.
 
 ## Portability Assessment Flow
 
