@@ -190,6 +190,25 @@ Invoke-SubscriptionPortabilityAssessment.ps1  (entrypoint)
   full set of check results; it is written under `.generated/` and is not
   committed to version control.
 
+## Assessment-to-Terraform Input Boundary
+
+After a `GO` decision,
+`New-TerraformInputsFromAssessment.ps1` passes the validated assessment into
+the Terraform configuration boundary.
+
+The assessment supplies the validated environment, workload and monitoring
+locations, region codes, and selected VM SKU. The operator supplies values that
+are deployment-specific but are not capability checks, including application,
+instance number, SSH public key, and alert email address.
+
+`TerraformInputGenerator.psm1` validates and serializes these values into
+git-ignored `terraform.auto.tfvars.json` files for the backend bootstrap and
+environment roots. It writes files atomically, protects existing files unless
+`-Force` is specified, and supports `-WhatIf`.
+
+This stage is local and deterministic. It does not authenticate to Azure,
+execute Terraform, create a backend, or modify infrastructure.
+
 ## Role of `SubscriptionPortability.Foundation.psm1`
 
 This module contains the assessment's implementation logic as pure,

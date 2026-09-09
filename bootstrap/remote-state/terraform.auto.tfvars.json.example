@@ -1,0 +1,6 @@
+{
+  "environment": "dev",
+  "workload_location": "denmarkeast",
+  "workload_region_code": "deu",
+  "instance_number": "001"
+}

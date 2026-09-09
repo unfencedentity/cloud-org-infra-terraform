@@ -163,6 +163,33 @@ PowerShell preflight assessment described in
 [automation/onboarding/README.md](automation/onboarding/README.md) and confirm
 a `GO` result first.
 
+## Generated Terraform Inputs
+
+After the portability assessment returns `GO`, generate the local Terraform
+inputs from the repository root:
+
+```powershell
+.\automation\onboarding\New-TerraformInputsFromAssessment.ps1 `
+    -ProfilePath .\.generated\onboarding\dev-profile.json `
+    -Application core `
+    -InstanceNumber 001 `
+    -SshPublicKey (Get-Content ~/.ssh/id_ed25519.pub -Raw) `
+    -AlertEmailAddress ops-alerts@example.invalid
+```
+
+The command generates:
+
+- `bootstrap/remote-state/terraform.auto.tfvars.json`;
+- `environments/dev/terraform.auto.tfvars.json`.
+
+These runtime files are git-ignored. The generator accepts only a valid `GO`
+profile, uses private VM access by default, performs no Azure or Terraform
+operations, and does not generate credentials or secret values.
+
+Use `-WhatIf` to preview the operation and `-Force` to replace existing
+generated files intentionally. Do not use generated auto-tfvars together with
+duplicate values in a manually maintained `terraform.tfvars` file.
+
 ## Naming and Region Convention
 
 Resource names and tags are generated from `terraform.tfvars` inputs using an

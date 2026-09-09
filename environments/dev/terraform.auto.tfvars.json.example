@@ -1,0 +1,13 @@
+{
+  "application": "core",
+  "environment": "dev",
+  "workload_location": "denmarkeast",
+  "workload_region_code": "deu",
+  "monitoring_location": "swedencentral",
+  "monitoring_region_code": "swe",
+  "instance_number": "001",
+  "ssh_public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 example@invalid",
+  "enable_vm_public_ip": false,
+  "admin_source_cidr": null,
+  "alert_email_address": "ops-alerts@example.invalid"
+}
