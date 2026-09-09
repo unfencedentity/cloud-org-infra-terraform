@@ -14,8 +14,11 @@ tenant/subscription is ready for deployment before any Terraform is run.
 
 ## Current Terraform Capabilities
 
-The `environments/dev` root currently provisions a core application landing
-zone, including:
+The `environments/dev` root is the orchestration layer: it creates the
+resource group and naming/tagging locals, wires together the reusable
+modules under `modules/`, and directly owns the cross-cutting alerts and
+diagnostic settings described below. It provisions a core application
+landing zone, including:
 
 - Resource group, virtual network, and subnets (application, private endpoint,
   App Service integration with delegation)
@@ -60,8 +63,37 @@ The Linux VM is private-by-default:
   Gateway, or Azure Firewall; those remain future options for broader private
   access patterns.
 
-The `modules/` directory exists for shared Terraform modules but is currently
-empty; all resources are defined directly in each environment root.
+## Module Structure
+
+`environments/dev` composes six reusable modules under `modules/`. Each module
+has a focused `main.tf`, `variables.tf`, and `outputs.tf`, receives only the
+plain values and resource IDs it needs (never provider credentials, tenant
+IDs, subscription IDs, or secrets), and declares its own `required_providers`
+without configuring the provider itself (inherited from the root):
+
+| Module | Owns |
+|---|---|
+| `modules/networking` | VNet, subnets, NSG, conditional Public IP/SSH rule, VM NIC |
+| `modules/identity-security` | User-assigned managed identity, Key Vault, Key Vault RBAC role assignments |
+| `modules/storage` | Storage Account, blob private endpoint, private DNS zone and link |
+| `modules/observability` | Log Analytics workspace, Application Insights, Azure Monitor action group |
+| `modules/compute` | Linux VM, Recovery Services vault, VM backup policy and protected VM |
+| `modules/application` | App Service plan, Linux Web App, App Service VNet integration wiring |
+
+The VM metric alert, the subscription Service Health alert, and all six
+diagnostic settings (VM, NSG, Key Vault, storage account, Web App, App Service
+plan) stay in `environments/dev/main.tf` rather than in any one module: each
+targets resources from multiple modules and routes to the observability
+module's Log Analytics workspace and action group, so owning them in a single
+module would force that module to depend on every other module purely to
+receive target resource IDs. Only the root naturally sees every module's
+outputs, so keeping these cross-cutting resources there avoids an inverted,
+near-circular dependency shape.
+
+Identity-security resolves the Key Vault's tenant ID and the deploying
+principal's object ID from its own `data "azurerm_client_config" "current"`
+block rather than receiving them as module inputs, consistent with never
+passing tenant/subscription IDs between modules.
 
 ## Repository Structure
 
@@ -69,8 +101,8 @@ empty; all resources are defined directly in each environment root.
 automation/onboarding/   PowerShell preflight assessment and its Pester tests
 bootstrap/remote-state/  Terraform root that creates the remote state backend
 docs/                    Architecture documentation
-environments/dev/        Terraform root for the dev environment
-modules/                 Reserved for shared Terraform modules (currently empty)
+environments/dev/        Terraform root (orchestration layer) for the dev environment
+modules/                 Reusable Terraform modules composed by environments/dev
 ```
 
 ## Separation of Concerns
@@ -79,8 +111,9 @@ modules/                 Reserved for shared Terraform modules (currently empty)
   checks that classify a tenant/subscription as `GO` or `NO-GO` and produce a
   local JSON profile. It never runs Terraform and never performs Azure write
   operations.
-- **Terraform deployment** (`bootstrap/`, `environments/`): the only part of
-  the repository that creates, changes, or destroys Azure resources.
+- **Terraform deployment** (`bootstrap/`, `environments/`, `modules/`): the
+  only part of the repository that creates, changes, or destroys Azure
+  resources.
 - **Pester testing** (`automation/onboarding/tests/`): unit tests for the
   preflight PowerShell logic only; it has no live Azure dependency and does
   not test Terraform.
