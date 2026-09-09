@@ -1,0 +1,54 @@
+# Deterministic cross-platform line endings.
+* text=auto eol=lf
+
+# Terraform / HCL
+*.tf text eol=lf
+*.tfvars text eol=lf
+*.tfvars.example text eol=lf
+*.hcl text eol=lf
+*.hcl.example text eol=lf
+
+# YAML
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# JSON
+*.json text eol=lf
+
+# PowerShell
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.psd1 text eol=lf
+
+# Shell
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Git/editor config
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+
+# Windows batch files keep CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary formats
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.webp binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.7z binary
+*.rar binary
+*.exe binary
+*.dll binary
+*.pdf binary
