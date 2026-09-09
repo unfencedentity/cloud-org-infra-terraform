@@ -73,6 +73,25 @@ variable "ssh_public_key" {
   type        = string
 }
 
+variable "enable_vm_public_ip" {
+  description = "Whether to create a Public IP and allow inbound SSH to the VM from admin_source_cidr. Defaults to false; the VM is private-only unless explicitly opted in."
+  type        = bool
+  default     = false
+}
+
+variable "admin_source_cidr" {
+  description = "Single, explicit source CIDR (e.g. \"203.0.113.10/32\") allowed to SSH to the VM when enable_vm_public_ip is true. Must not be null, empty, \"*\", \"0.0.0.0/0\", or \"Internet\"."
+  type        = string
+  default     = null
+
+  validation {
+    condition = !var.enable_vm_public_ip || (
+      can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[1-9]|[12][0-9]|3[0-2])$", coalesce(var.admin_source_cidr, ""))) &&
+      can(cidrhost(coalesce(var.admin_source_cidr, "0.0.0.0/32"), 0))
+    )
+    error_message = "When enable_vm_public_ip is true, admin_source_cidr must be a specific, valid CIDR block with a prefix length between /1 and /32 (not null, empty, \"*\", \"0.0.0.0/0\", or \"Internet\")."
+  }
+}
 
 variable "alert_email_address" {
   description = "Email address used for Azure Monitor incident notifications."

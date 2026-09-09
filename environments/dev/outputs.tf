@@ -92,3 +92,14 @@ output "linux_web_app_user_assigned_identity_id" {
   description = "Attached User Assigned Managed Identity resource ID for the Linux Web App."
   value       = azurerm_user_assigned_identity.application.id
 }
+
+output "vm_public_ip_address" {
+  description = "Public IP address assigned to the VM's network interface, or null when public access is disabled (the default)."
+  value       = local.vm_public_access_enabled ? azurerm_public_ip.application[0].ip_address : null
+}
+
+output "vm_public_ip_id" {
+  description = "Resource ID of the VM's Public IP, or null when public access is disabled (the default)."
+  value       = local.vm_public_access_enabled ? azurerm_public_ip.application[0].id : null
+}
+

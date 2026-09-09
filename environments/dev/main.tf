@@ -29,6 +29,12 @@ locals {
   monitoring_tags = merge(local.common_tags, {
     Region = var.monitoring_region_code
   })
+
+  # Belt-and-suspenders gate: only create the SSH rule/Public IP when explicitly enabled with a valid, restricted CIDR.
+  vm_public_access_enabled = var.enable_vm_public_ip && (
+    can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[1-9]|[12][0-9]|3[0-2])$", coalesce(var.admin_source_cidr, ""))) &&
+    can(cidrhost(coalesce(var.admin_source_cidr, "0.0.0.0/32"), 0))
+  )
 }
 
 resource "azurerm_virtual_network" "core" {
@@ -84,6 +90,7 @@ resource "azurerm_subnet_network_security_group_association" "application" {
 }
 
 resource "azurerm_network_security_rule" "allow_ssh" {
+  count                       = local.vm_public_access_enabled ? 1 : 0
   name                        = "allow-ssh"
   priority                    = 100
   direction                   = "Inbound"
@@ -91,13 +98,14 @@ resource "azurerm_network_security_rule" "allow_ssh" {
   protocol                    = "Tcp"
   source_port_range           = "*"
   destination_port_range      = "22"
-  source_address_prefix       = "*"
+  source_address_prefix       = var.admin_source_cidr
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.core.name
   network_security_group_name = azurerm_network_security_group.application.name
 }
 
 resource "azurerm_public_ip" "application" {
+  count               = local.vm_public_access_enabled ? 1 : 0
   name                = "pip-${local.name_prefix}"
   location            = azurerm_resource_group.core.location
   resource_group_name = azurerm_resource_group.core.name
@@ -116,7 +124,7 @@ resource "azurerm_network_interface" "application" {
     name                          = "ipconfig-${local.name_prefix}"
     subnet_id                     = azurerm_subnet.application.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.application.id
+    public_ip_address_id          = local.vm_public_access_enabled ? azurerm_public_ip.application[0].id : null
   }
 }
 

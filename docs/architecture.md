@@ -13,9 +13,11 @@ split across a workload region and a monitoring region:
 - A virtual network with dedicated subnets for the application VM, private
   endpoints, and App Service VNet integration (with a `Microsoft.Web/serverFarms`
   delegation).
-- A network security group attached to the application subnet.
-- A Linux virtual machine with a user-assigned managed identity, a static
-  public IP, and boot diagnostics.
+- A network security group attached to the application subnet, with no
+  inbound rules by default.
+- A Linux virtual machine with a user-assigned managed identity and boot
+  diagnostics; it has a private-only network interface unless public SSH
+  access is explicitly enabled (see "VM Access Model" below).
 - A Key Vault using RBAC authorization, accessed through the VM's managed
   identity and the deploying principal; Terraform does not create or store
   any secret values, and purge protection is enabled.
@@ -35,6 +37,27 @@ Terraform itself depends on: a resource group, an Azure AD-only storage
 account with blob versioning and retention, a blob container for state files,
 an RBAC role assignment granting the deploying principal blob data access, and
 a management lock preventing deletion of the state storage account.
+
+## VM Access Model
+
+The VM's Public IP and inbound SSH NSG rule (`azurerm_public_ip.application`
+and `azurerm_network_security_rule.allow_ssh`) are conditional resources,
+created only when `local.vm_public_access_enabled` is true. That local is true
+only when both:
+
+- `enable_vm_public_ip = true`, and
+- `admin_source_cidr` is a specific, valid CIDR (rejecting `null`, empty,
+  `"*"`, `"0.0.0.0/0"`, and `"Internet"` at the variable-validation level as
+  well as at the resource-count level).
+
+By default (`enable_vm_public_ip = false`), the VM has no Public IP and no
+inbound SSH path; the network interface's `public_ip_address_id` is `null`.
+Administration in this state is expected to go through Azure Run Command or
+other private connectivity. The `vm_public_ip_address` and `vm_public_ip_id`
+outputs return `null` in this state. Enabling public SSH access is treated as
+an explicit, allowlisted exception for a single administrative source, not a
+default posture. Azure Bastion, a VPN Gateway, a NAT Gateway, and Azure
+Firewall are intentionally out of scope for this checkpoint.
 
 ## Terraform Ownership Boundaries
 

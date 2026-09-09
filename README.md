@@ -19,15 +19,16 @@ zone, including:
 
 - Resource group, virtual network, and subnets (application, private endpoint,
   App Service integration with delegation)
-- Network security group and rules
-- Public IP and network interface
+- Network security group; no Public IP and no inbound SSH rule are created by
+  default (see "VM Access Model" below)
 - User-assigned managed identity
 - Key Vault (RBAC-authorized) with role assignments for the managed identity and
   the deploying principal; no secret values are created by Terraform
 - Storage account with a private endpoint and private DNS zone for blob,
   shared-key authentication disabled
 - Log Analytics workspace and Application Insights
-- Linux virtual machine with managed identity and boot diagnostics
+- Linux virtual machine with managed identity and boot diagnostics, private
+  network interface only by default
 - Recovery Services vault with a VM backup policy and protected VM
 - Azure Monitor action group, metric alert, service health alert, and
   diagnostic settings for the VM, NSG, and Key Vault
@@ -37,6 +38,27 @@ backend itself: a resource group, a storage account (Azure AD auth only,
 versioning and retention enabled, `prevent_destroy` lifecycle), a blob
 container, an RBAC role assignment for the current principal, and a
 management lock preventing accidental deletion of the state storage account.
+
+## VM Access Model
+
+The Linux VM is private-by-default:
+
+- No Public IP is created and no inbound SSH rule exists on the NSG unless
+  explicitly enabled.
+- The intended way to administer the VM is Azure Run Command (or other
+  private connectivity, such as a future jump host or VPN), which requires no
+  inbound network access.
+- Optional, explicit public SSH access can be enabled for a single
+  administrative source by setting `enable_vm_public_ip = true` and
+  `admin_source_cidr` to one specific CIDR (e.g. `"203.0.113.10/32"`) in
+  `terraform.tfvars`. This is treated as an explicit, allowlisted exception,
+  not the default.
+- `admin_source_cidr` must be a specific, valid CIDR; `"*"`, `"0.0.0.0/0"`,
+  `"Internet"`, and empty values are always rejected, and the Public IP/SSH
+  rule are only created when both settings are valid.
+- This checkpoint does not introduce Azure Bastion, a VPN Gateway, a NAT
+  Gateway, or Azure Firewall; those remain future options for broader private
+  access patterns.
 
 The `modules/` directory exists for shared Terraform modules but is currently
 empty; all resources are defined directly in each environment root.
