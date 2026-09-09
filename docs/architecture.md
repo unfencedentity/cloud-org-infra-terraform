@@ -17,9 +17,11 @@ landing zone:
 - A Linux virtual machine with a user-assigned managed identity, a static
   public IP, and boot diagnostics.
 - A Key Vault using RBAC authorization, accessed through the VM's managed
-  identity and the deploying principal.
+  identity and the deploying principal; Terraform does not create or store
+  any secret values, and purge protection is enabled.
 - A storage account reachable only through a private endpoint into the blob
-  private DNS zone (public network access is disabled).
+  private DNS zone (public network access and shared-key authentication are
+  both disabled).
 - A Log Analytics workspace and Application Insights instance used as
   diagnostic and monitoring targets.
 - A Recovery Services vault with a daily/weekly/monthly VM backup policy
@@ -48,6 +50,10 @@ a management lock preventing deletion of the state storage account.
   environment root.
 - No Terraform code depends on, or is executed by, the PowerShell onboarding
   automation described below.
+- Each Terraform root's `terraform.tfvars` and `backend.hcl` hold
+  environment-specific, non-public values (resource group names, storage
+  account names, keys). They are git-ignored; only the `.tfvars.example` and
+  `.hcl.example` templates with placeholder values are tracked.
 
 ## Portability Assessment Flow
 

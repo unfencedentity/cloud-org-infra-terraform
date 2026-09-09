@@ -22,8 +22,10 @@ zone, including:
 - Network security group and rules
 - Public IP and network interface
 - User-assigned managed identity
-- Key Vault (RBAC-authorized) with an example secret and role assignments
-- Storage account with a private endpoint and private DNS zone for blob
+- Key Vault (RBAC-authorized) with role assignments for the managed identity and
+  the deploying principal; no secret values are created by Terraform
+- Storage account with a private endpoint and private DNS zone for blob,
+  shared-key authentication disabled
 - Log Analytics workspace and Application Insights
 - Linux virtual machine with managed identity and boot diagnostics
 - Recovery Services vault with a VM backup policy and protected VM
@@ -70,12 +72,15 @@ The remote state backend is created once per environment scope from
 `bootstrap/remote-state`, before any environment root can use a remote
 backend:
 
-1. Populate `bootstrap/remote-state/terraform.tfvars` with the target resource
-   group name, location, and state container name.
+1. Copy `bootstrap/remote-state/terraform.tfvars.example` to
+   `bootstrap/remote-state/terraform.tfvars` and populate it with the target
+   resource group name, location, and state container name. This file is
+   git-ignored and must never be committed.
 2. Run `terraform init`, `terraform plan`, and `terraform apply` from
    `bootstrap/remote-state`.
-3. Record the resulting resource group, storage account, and container names
-   in the corresponding environment's `backend.hcl`.
+3. Copy `backend.hcl.example` to `backend.hcl` in the corresponding
+   environment directory and record the resulting resource group, storage
+   account, and container names there. This file is also git-ignored.
 
 The state storage account enforces Azure AD authentication, blob versioning,
 30-day delete retention, and a `CanNotDelete` management lock, so it is not
@@ -88,10 +93,14 @@ root with its own `backend.hcl`, `terraform.tfvars`, and state file:
 
 1. Confirm the remote-state backend for that environment already exists (see
    above).
-2. Run `terraform init -backend-config="backend.hcl"` from the environment
+2. Copy `terraform.tfvars.example` and `backend.hcl.example` in the
+   environment directory to `terraform.tfvars` and `backend.hcl`, then fill in
+   the real, environment-specific values. Both files are git-ignored so local
+   configuration never gets committed.
+3. Run `terraform init -backend-config="backend.hcl"` from the environment
    directory.
-3. Run `terraform plan` and review the change set.
-4. Run `terraform apply` to provision or update resources.
+4. Run `terraform plan` and review the change set.
+5. Run `terraform apply` to provision or update resources.
 
 Before onboarding a new tenant or subscription for an environment, run the
 PowerShell preflight assessment described in

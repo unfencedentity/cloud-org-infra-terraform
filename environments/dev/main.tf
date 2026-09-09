@@ -113,19 +113,8 @@ resource "azurerm_key_vault" "application" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
-  purge_protection_enabled   = false
+  purge_protection_enabled   = true
   soft_delete_retention_days = 7
-}
-
-resource "azurerm_key_vault_secret" "application" {
-  name         = "test-secret"
-  value        = "test-secret-value"
-  key_vault_id = azurerm_key_vault.application.id
-
-  depends_on = [
-    azurerm_role_assignment.key_vault_secrets_user,
-    azurerm_role_assignment.key_vault_secrets_admin,
-  ]
 }
 
 resource "azurerm_role_assignment" "key_vault_secrets_user" {
@@ -151,7 +140,7 @@ resource "azurerm_storage_account" "application" {
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
   public_network_access_enabled   = false
-  shared_access_key_enabled       = true
+  shared_access_key_enabled       = false
 }
 
 resource "azurerm_private_dns_zone" "blob" {
@@ -233,9 +222,8 @@ resource "azurerm_linux_virtual_machine" "application" {
     identity_ids = [azurerm_user_assigned_identity.application.id]
   }
 
-  boot_diagnostics {
-    storage_account_uri = azurerm_storage_account.application.primary_blob_endpoint
-  }
+  # Platform-managed boot diagnostics storage; the app storage account has shared-key auth disabled.
+  boot_diagnostics {}
 }
 
 resource "azurerm_recovery_services_vault" "application" {
@@ -461,7 +449,7 @@ resource "azurerm_linux_web_app" "application" {
   }
 
   app_settings = {
-    APPLICATION_SECRET                    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application.versionless_id})"
+    KEY_VAULT_URI                         = azurerm_key_vault.application.vault_uri
     APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.application.connection_string
   }
 
