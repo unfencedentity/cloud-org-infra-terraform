@@ -1,5 +1,5 @@
-resource_group_name  = "rg-dev-tfstate-weu-001"
-storage_account_name = "stc038b8cfb3e8b79d3d904a"
+resource_group_name  = "rg-tfstate-dev-deu-001"
+storage_account_name = "stexampletfstate0001"
 container_name       = "tfstate"
 key                  = "bootstrap/remote-state.tfstate"
 use_azuread_auth     = true

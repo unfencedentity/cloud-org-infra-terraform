@@ -4,3 +4,7 @@
 *.tfstate.*
 crash.log
 .generated/
+terraform.tfvars
+backend.hcl
+*.auto.tfvars.json
+!*.auto.tfvars.json.example

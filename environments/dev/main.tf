@@ -1,314 +1,165 @@
 resource "azurerm_resource_group" "core" {
-  name     = var.resource_group_name
-  location = var.location
+  name     = local.resource_group_name
+  location = var.workload_location
+  tags     = local.common_tags
 }
 
 data "azurerm_client_config" "current" {}
 
 locals {
-  web_app_name = lower("app-dev-weu-${substr(sha1(data.azurerm_client_config.current.subscription_id), 0, 8)}")
+  # Application-Environment-Region-Instance naming, matching the cloud-org-infra PowerShell repository convention.
+  name_prefix            = "${var.application}-${var.environment}-${var.workload_region_code}-${var.instance_number}"
+  monitoring_name_prefix = "${var.application}-${var.environment}-${var.monitoring_region_code}-${var.instance_number}"
+
+  # Hyphen-free variant for resources with strict Azure naming restrictions (Storage Account, Key Vault, VM computer name).
+  compact_suffix = lower(replace(local.name_prefix, "-", ""))
+
+  resource_group_name  = "rg-${local.name_prefix}"
+  storage_account_name = "st${local.compact_suffix}"
+
+  web_app_name = lower("app-${var.application}-${var.environment}-${var.workload_region_code}-${substr(sha1(data.azurerm_client_config.current.subscription_id), 0, 8)}")
 
   common_tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
+    Application = var.application
+    Environment = var.environment
+    Region      = var.workload_region_code
+    ManagedBy   = "Terraform"
   }
+
+  monitoring_tags = merge(local.common_tags, {
+    Region = var.monitoring_region_code
+  })
+
+  # Belt-and-suspenders gate: only create the SSH rule/Public IP when explicitly enabled with a valid, restricted CIDR.
+  vm_public_access_enabled = var.enable_vm_public_ip && (
+    can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/(?:[1-9]|[12][0-9]|3[0-2])$", coalesce(var.admin_source_cidr, ""))) &&
+    can(cidrhost(coalesce(var.admin_source_cidr, "0.0.0.0/32"), 0))
+  )
 }
 
-resource "azurerm_virtual_network" "core" {
-  name                = "vnet-dev-core-weu-001"
-  location            = azurerm_resource_group.core.location
+module "networking" {
+  source = "../../modules/networking"
+
   resource_group_name = azurerm_resource_group.core.name
-  address_space       = ["10.0.0.0/16"]
-}
-
-resource "azurerm_subnet" "application" {
-  name                 = "snet-app-dev-weu-001"
-  resource_group_name  = azurerm_resource_group.core.name
-  virtual_network_name = azurerm_virtual_network.core.name
-  address_prefixes     = ["10.0.1.0/24"]
-}
-
-resource "azurerm_subnet" "private_endpoint" {
-  name                 = "snet-pe-dev-weu-001"
-  resource_group_name  = azurerm_resource_group.core.name
-  virtual_network_name = azurerm_virtual_network.core.name
-  address_prefixes     = ["10.0.2.0/24"]
-
-  private_endpoint_network_policies = "Disabled"
-}
-
-resource "azurerm_subnet" "appservice_integration" {
-  name                 = "snet-appservice-integration-dev-weu-001"
-  resource_group_name  = azurerm_resource_group.core.name
-  virtual_network_name = azurerm_virtual_network.core.name
-  address_prefixes     = ["10.0.3.0/26"]
-
-  delegation {
-    name = "webapp-delegation"
-
-    service_delegation {
-      name    = "Microsoft.Web/serverFarms"
-      actions = ["Microsoft.Network/virtualNetworks/subnets/action"]
-    }
-  }
-}
-
-resource "azurerm_network_security_group" "application" {
-  name                = "nsg-app-dev-weu-001"
   location            = azurerm_resource_group.core.location
+  tags                = local.common_tags
+
+  vnet_name          = "vnet-${local.name_prefix}"
+  vnet_address_space = ["10.0.0.0/16"]
+
+  app_subnet_name             = "snet-app-${local.name_prefix}"
+  app_subnet_address_prefixes = ["10.0.1.0/24"]
+
+  private_endpoint_subnet_name             = "snet-pe-${local.name_prefix}"
+  private_endpoint_subnet_address_prefixes = ["10.0.2.0/24"]
+
+  appservice_integration_subnet_name             = "snet-appsvc-${local.name_prefix}"
+  appservice_integration_subnet_address_prefixes = ["10.0.3.0/26"]
+
+  nsg_name = "nsg-${local.name_prefix}"
+
+  create_public_access = local.vm_public_access_enabled
+  admin_source_cidr    = var.admin_source_cidr
+
+  public_ip_name         = "pip-${local.name_prefix}"
+  network_interface_name = "nic-${local.name_prefix}"
+  ip_configuration_name  = "ipconfig-${local.name_prefix}"
+}
+
+module "identity_security" {
+  source = "../../modules/identity-security"
+
   resource_group_name = azurerm_resource_group.core.name
-}
-
-resource "azurerm_subnet_network_security_group_association" "application" {
-  subnet_id                 = azurerm_subnet.application.id
-  network_security_group_id = azurerm_network_security_group.application.id
-}
-
-resource "azurerm_network_security_rule" "allow_ssh" {
-  name                        = "allow-ssh"
-  priority                    = 100
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "22"
-  source_address_prefix       = "*"
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.core.name
-  network_security_group_name = azurerm_network_security_group.application.name
-}
-
-resource "azurerm_public_ip" "application" {
-  name                = "pip-app-dev-weu-001"
   location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-}
+  tags                = local.common_tags
 
-resource "azurerm_network_interface" "application" {
-  name                = "nic-app-dev-weu-001"
-  location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
+  identity_name  = "id-${local.name_prefix}"
+  key_vault_name = "kv${local.compact_suffix}"
 
-  ip_configuration {
-    name                          = "ipconfig-app-dev-weu-001"
-    subnet_id                     = azurerm_subnet.application.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.application.id
-  }
-}
-
-resource "azurerm_user_assigned_identity" "application" {
-  name                = "id-app-dev-weu-001"
-  location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-}
-
-resource "azurerm_key_vault" "application" {
-  name                       = "kv-app-dev-weu-001"
-  location                   = azurerm_resource_group.core.location
-  resource_group_name        = azurerm_resource_group.core.name
-  tenant_id                  = data.azurerm_client_config.current.tenant_id
-  sku_name                   = "standard"
-  rbac_authorization_enabled = true
-  purge_protection_enabled   = false
+  key_vault_sku_name         = "standard"
+  purge_protection_enabled   = true
   soft_delete_retention_days = 7
 }
 
-resource "azurerm_key_vault_secret" "application" {
-  name         = "test-secret"
-  value        = "test-secret-value"
-  key_vault_id = azurerm_key_vault.application.id
+module "storage" {
+  source = "../../modules/storage"
 
-  depends_on = [
-    azurerm_role_assignment.key_vault_secrets_user,
-    azurerm_role_assignment.key_vault_secrets_admin,
-  ]
-}
-
-resource "azurerm_role_assignment" "key_vault_secrets_user" {
-  scope                = azurerm_key_vault.application.id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = azurerm_user_assigned_identity.application.principal_id
-}
-
-resource "azurerm_role_assignment" "key_vault_secrets_admin" {
-  scope                = azurerm_key_vault.application.id
-  role_definition_name = "Key Vault Secrets Officer"
-  principal_id         = data.azurerm_client_config.current.object_id
-}
-
-resource "azurerm_storage_account" "application" {
-  name                            = "stappdevweu001"
-  resource_group_name             = azurerm_resource_group.core.name
-  location                        = azurerm_resource_group.core.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  account_kind                    = "StorageV2"
-  access_tier                     = "Hot"
-  min_tls_version                 = "TLS1_2"
-  allow_nested_items_to_be_public = false
-  public_network_access_enabled   = false
-  shared_access_key_enabled       = true
-}
-
-resource "azurerm_private_dns_zone" "blob" {
-  name                = "privatelink.blob.core.windows.net"
   resource_group_name = azurerm_resource_group.core.name
-}
-
-resource "azurerm_private_dns_zone_virtual_network_link" "blob" {
-  name                  = "blob-dns-link"
-  resource_group_name   = azurerm_resource_group.core.name
-  private_dns_zone_name = azurerm_private_dns_zone.blob.name
-  virtual_network_id    = azurerm_virtual_network.core.id
-}
-
-resource "azurerm_private_endpoint" "blob" {
-  name                = "pep-stappdevweu001-blob"
   location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  subnet_id           = azurerm_subnet.private_endpoint.id
+  tags                = local.common_tags
 
-  private_service_connection {
-    name                           = "psc-stappdevweu001-blob"
-    private_connection_resource_id = azurerm_storage_account.application.id
-    subresource_names              = ["blob"]
-    is_manual_connection           = false
-  }
+  storage_account_name = local.storage_account_name
 
-  private_dns_zone_group {
-    name                 = "blob-dns-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
-  }
+  vnet_id                    = module.networking.vnet_id
+  private_endpoint_subnet_id = module.networking.private_endpoint_subnet_id
+
+  private_endpoint_name           = "pep-blob-${local.name_prefix}"
+  private_service_connection_name = "psc-blob-${local.name_prefix}"
+  dns_link_name                   = "blob-dns-link"
 }
 
-resource "azurerm_log_analytics_workspace" "application" {
-  name                = "log-app-dev-weu-001"
+module "observability" {
+  source = "../../modules/observability"
+
+  resource_group_name = azurerm_resource_group.core.name
+  location            = var.monitoring_location
+  tags                = local.common_tags
+  monitoring_tags     = local.monitoring_tags
+
+  log_analytics_workspace_name = "log-${local.monitoring_name_prefix}"
+  application_insights_name    = "appi-${local.monitoring_name_prefix}"
+
+  action_group_name       = "ag-${local.name_prefix}"
+  action_group_short_name = substr("${var.application}${var.environment}", 0, 12)
+  alert_email_address     = var.alert_email_address
+}
+
+module "compute" {
+  source = "../../modules/compute"
+
+  resource_group_name = azurerm_resource_group.core.name
   location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
+  tags                = local.common_tags
+
+  vm_name       = "vm-${local.name_prefix}"
+  computer_name = "vm${local.compact_suffix}"
+
+  network_interface_id = module.networking.network_interface_id
+  identity_id          = module.identity_security.identity_id
+  ssh_public_key       = var.ssh_public_key
+
+  recovery_services_vault_name = "rsv-${local.name_prefix}"
+  backup_policy_name           = "bkp-vm-${local.name_prefix}"
 }
 
-resource "azurerm_application_insights" "application" {
-  name                = "appi-app-dev-weu-001"
+module "application" {
+  source = "../../modules/application"
+
+  resource_group_name = azurerm_resource_group.core.name
   location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  workspace_id        = azurerm_log_analytics_workspace.application.id
-  application_type    = "web"
+  tags                = local.common_tags
+
+  service_plan_name = "asp-${local.name_prefix}"
+  web_app_name      = local.web_app_name
+
+  appservice_integration_subnet_id = module.networking.appservice_integration_subnet_id
+  identity_id                      = module.identity_security.identity_id
+  key_vault_uri                    = module.identity_security.key_vault_uri
+
+  application_insights_connection_string = module.observability.application_insights_connection_string
 }
 
-resource "azurerm_linux_virtual_machine" "application" {
-  name                            = "vm-app-dev-weu-001"
-  computer_name                   = "vmappdev001"
-  location                        = azurerm_resource_group.core.location
-  resource_group_name             = azurerm_resource_group.core.name
-  network_interface_ids           = [azurerm_network_interface.application.id]
-  size                            = "Standard_B2s_v2"
-  admin_username                  = "azureadmin"
-  disable_password_authentication = true
-
-  admin_ssh_key {
-    username   = "azureadmin"
-    public_key = var.ssh_public_key
-  }
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-  }
-
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts-gen2"
-    version   = "latest"
-  }
-
-  identity {
-    type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.application.id]
-  }
-
-  boot_diagnostics {
-    storage_account_uri = azurerm_storage_account.application.primary_blob_endpoint
-  }
-}
-
-resource "azurerm_recovery_services_vault" "application" {
-  name                = "rsv-app-dev-weu-001"
-  location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  sku                 = "Standard"
-  storage_mode_type   = "GeoRedundant"
-
-  tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
-  }
-}
-
-resource "azurerm_backup_policy_vm" "application" {
-  name                = "bkp-vm-app-dev-weu-001"
-  resource_group_name = azurerm_resource_group.core.name
-  recovery_vault_name = azurerm_recovery_services_vault.application.name
-  timezone            = "UTC"
-
-  backup {
-    frequency = "Daily"
-    time      = "01:00"
-  }
-
-  retention_daily {
-    count = 7
-  }
-
-  retention_weekly {
-    count    = 4
-    weekdays = ["Sunday"]
-  }
-
-  retention_monthly {
-    count    = 12
-    weekdays = ["Sunday"]
-    weeks    = ["First"]
-  }
-}
-
-resource "azurerm_backup_protected_vm" "application" {
-  resource_group_name = azurerm_resource_group.core.name
-  recovery_vault_name = azurerm_recovery_services_vault.application.name
-  source_vm_id        = azurerm_linux_virtual_machine.application.id
-  backup_policy_id    = azurerm_backup_policy_vm.application.id
-}
-
-resource "azurerm_monitor_action_group" "application" {
-  name                = "ag-app-dev-weu-001"
-  resource_group_name = azurerm_resource_group.core.name
-  short_name          = "agappdev"
-  enabled             = true
-
-  email_receiver {
-    name                    = "ops-email"
-    email_address           = var.alert_email_address
-    use_common_alert_schema = true
-  }
-
-  tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
-  }
-}
+# Cross-cutting alerts and diagnostic settings remain in the environment root rather than in any single
+# module: each one targets resources from multiple modules (compute, networking, identity-security, storage,
+# application) and routes to the observability module's Log Analytics workspace and action group. Owning them
+# in one module would force that module to depend on every other module purely to receive target resource IDs,
+# inverting the modules' natural ownership boundaries without eliminating any dependency - only the root
+# naturally sees every module's outputs, so wiring them here avoids that circular/reverse-dependency shape.
 
 resource "azurerm_monitor_metric_alert" "vm_high_cpu" {
-  name                = "alert-vm-high-cpu-app-dev-weu-001"
+  name                = "alert-vm-high-cpu-${local.name_prefix}"
   resource_group_name = azurerm_resource_group.core.name
-  scopes              = [azurerm_linux_virtual_machine.application.id]
+  scopes              = [module.compute.vm_id]
   description         = "Alert when the Linux VM CPU exceeds 80 percent for 15 minutes."
   severity            = 2
   enabled             = true
@@ -324,18 +175,14 @@ resource "azurerm_monitor_metric_alert" "vm_high_cpu" {
   }
 
   action {
-    action_group_id = azurerm_monitor_action_group.application.id
+    action_group_id = module.observability.action_group_id
   }
 
-  tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
-  }
+  tags = local.common_tags
 }
 
 resource "azurerm_monitor_activity_log_alert" "service_health" {
-  name                = "alert-service-health-app-dev-weu-001"
+  name                = "alert-service-health-${local.name_prefix}"
   resource_group_name = azurerm_resource_group.core.name
   location            = "global"
   scopes              = ["/subscriptions/${data.azurerm_client_config.current.subscription_id}"]
@@ -346,25 +193,21 @@ resource "azurerm_monitor_activity_log_alert" "service_health" {
     category = "ServiceHealth"
 
     service_health {
-      locations = [var.location, "Global"]
+      locations = [var.workload_location, "Global"]
     }
   }
 
   action {
-    action_group_id = azurerm_monitor_action_group.application.id
+    action_group_id = module.observability.action_group_id
   }
 
-  tags = {
-    environment = "dev"
-    project     = "core"
-    managed_by  = "terraform"
-  }
+  tags = local.common_tags
 }
 
 resource "azurerm_monitor_diagnostic_setting" "vm" {
-  name                       = "diag-vm-app-dev-weu-001"
-  target_resource_id         = azurerm_linux_virtual_machine.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-vm-${local.name_prefix}"
+  target_resource_id         = module.compute.vm_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
   enabled_metric {
     category = "AllMetrics"
@@ -372,9 +215,9 @@ resource "azurerm_monitor_diagnostic_setting" "vm" {
 }
 
 resource "azurerm_monitor_diagnostic_setting" "nsg" {
-  name                       = "diag-nsg-app-dev-weu-001"
-  target_resource_id         = azurerm_network_security_group.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-nsg-${local.name_prefix}"
+  target_resource_id         = module.networking.nsg_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
   enabled_log {
     category = "NetworkSecurityGroupEvent"
@@ -386,9 +229,9 @@ resource "azurerm_monitor_diagnostic_setting" "nsg" {
 }
 
 resource "azurerm_monitor_diagnostic_setting" "key_vault" {
-  name                       = "diag-kv-app-dev-weu-001"
-  target_resource_id         = azurerm_key_vault.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-kv-${local.name_prefix}"
+  target_resource_id         = module.identity_security.key_vault_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
   enabled_log {
     category = "AuditEvent"
@@ -404,9 +247,9 @@ resource "azurerm_monitor_diagnostic_setting" "key_vault" {
 }
 
 resource "azurerm_monitor_diagnostic_setting" "storage" {
-  name                       = "diag-stappdevweu001"
-  target_resource_id         = azurerm_storage_account.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-st-${local.name_prefix}"
+  target_resource_id         = module.storage.storage_account_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
 
   enabled_metric {
@@ -414,72 +257,18 @@ resource "azurerm_monitor_diagnostic_setting" "storage" {
   }
 }
 
-resource "azurerm_service_plan" "application" {
-  name                = "asp-app-dev-weu-001"
-  location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
-  os_type             = "Linux"
-  sku_name            = "B1"
-  worker_count        = 1
-
-  tags = local.common_tags
-}
-
-resource "azurerm_linux_web_app" "application" {
-  name                                           = local.web_app_name
-  location                                       = azurerm_resource_group.core.location
-  resource_group_name                            = azurerm_resource_group.core.name
-  service_plan_id                                = azurerm_service_plan.application.id
-  enabled                                        = true
-  https_only                                     = true
-  public_network_access_enabled                  = true
-  client_affinity_enabled                        = false
-  virtual_network_subnet_id                      = azurerm_subnet.appservice_integration.id
-  key_vault_reference_identity_id                = azurerm_user_assigned_identity.application.id
-  ftp_publish_basic_authentication_enabled       = false
-  webdeploy_publish_basic_authentication_enabled = false
-
-  identity {
-    type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.application.id]
-  }
-
-  site_config {
-    always_on                         = true
-    ftps_state                        = "Disabled"
-    minimum_tls_version               = "1.2"
-    scm_minimum_tls_version           = "1.2"
-    http2_enabled                     = true
-    remote_debugging_enabled          = false
-    health_check_path                 = "/"
-    health_check_eviction_time_in_min = 5
-    vnet_route_all_enabled            = true
-
-    application_stack {
-      python_version = "3.12"
-    }
-  }
-
-  app_settings = {
-    APPLICATION_SECRET                    = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.application.versionless_id})"
-    APPLICATIONINSIGHTS_CONNECTION_STRING = azurerm_application_insights.application.connection_string
-  }
-
-  tags = local.common_tags
-}
-
 data "azurerm_monitor_diagnostic_categories" "linux_web_app" {
-  resource_id = azurerm_linux_web_app.application.id
+  resource_id = module.application.linux_web_app_id
 }
 
 data "azurerm_monitor_diagnostic_categories" "app_service_plan" {
-  resource_id = azurerm_service_plan.application.id
+  resource_id = module.application.app_service_plan_id
 }
 
 resource "azurerm_monitor_diagnostic_setting" "linux_web_app" {
-  name                       = "diag-webapp-app-dev-weu-001"
-  target_resource_id         = azurerm_linux_web_app.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-webapp-${local.name_prefix}"
+  target_resource_id         = module.application.linux_web_app_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
   dynamic "enabled_log" {
     for_each = data.azurerm_monitor_diagnostic_categories.linux_web_app.log_category_types
@@ -497,9 +286,9 @@ resource "azurerm_monitor_diagnostic_setting" "linux_web_app" {
 }
 
 resource "azurerm_monitor_diagnostic_setting" "app_service_plan" {
-  name                       = "diag-asp-app-dev-weu-001"
-  target_resource_id         = azurerm_service_plan.application.id
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.application.id
+  name                       = "diag-asp-${local.name_prefix}"
+  target_resource_id         = module.application.app_service_plan_id
+  log_analytics_workspace_id = module.observability.log_analytics_workspace_id
 
   dynamic "enabled_log" {
     for_each = data.azurerm_monitor_diagnostic_categories.app_service_plan.log_category_types

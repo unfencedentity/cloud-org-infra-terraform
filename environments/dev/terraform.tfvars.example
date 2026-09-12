@@ -1,0 +1,17 @@
+application             = "core"
+environment             = "dev"
+workload_location       = "denmarkeast"
+workload_region_code    = "deu"
+monitoring_location     = "swedencentral"
+monitoring_region_code  = "swe"
+instance_number         = "001"
+ssh_public_key          = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 example@invalid"
+alert_email_address     = "ops-alerts@example.invalid"
+
+# Secure default: no Public IP, no inbound SSH rule. The VM is reached via
+# Azure Run Command or private connectivity only.
+enable_vm_public_ip     = false
+admin_source_cidr       = null
+# To temporarily allow direct SSH, set enable_vm_public_ip = true and
+# admin_source_cidr to a single, explicit CIDR (e.g. "203.0.113.10/32").
+# "*", "0.0.0.0/0", "Internet", and empty values are always rejected.

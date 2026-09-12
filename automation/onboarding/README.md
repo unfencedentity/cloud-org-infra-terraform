@@ -198,24 +198,55 @@ Runtime profiles can contain real tenant and subscription identifiers. They are 
 - Console output shows masked IDs only.
 - No credentials, tokens, secrets, private keys, or personal email addresses are written.
 
-## Capability 2 Boundary
+## Terraform Input Generation
 
-This capability stops after assessment and profile generation.
+A successful `GO` profile can be converted into local Terraform input files:
 
-Capability 2 remains responsible for:
+```powershell
+.\automation\onboarding\New-TerraformInputsFromAssessment.ps1 `
+    -ProfilePath .\.generated\onboarding\dev-profile.json `
+    -Application core `
+    -InstanceNumber 001 `
+    -SshPublicKey (Get-Content ~/.ssh/id_ed25519.pub -Raw) `
+    -AlertEmailAddress ops-alerts@example.invalid
+```
 
-- backend bootstrap
-- persistent CI variables or secrets
-- OIDC identity provisioning
-- Terraform workflow execution
+The generator creates:
 
-Optional strict CI gate behavior (for example a future `FailOnNoGo` exit-code mode) is intentionally deferred to Terraform CI/CD capability work.
+- `bootstrap/remote-state/terraform.auto.tfvars.json`;
+- `environments/dev/terraform.auto.tfvars.json`.
 
-## Future Five-Minute Migration Workflow
+Both files are local runtime configuration and are excluded from Git. Public VM
+access remains disabled unless it is explicitly enabled with a valid,
+restricted administrator CIDR.
 
-Target experience:
+Use `-WhatIf` to preview file generation. Existing files are protected unless
+`-Force` is supplied.
 
-1. `az login`
-2. Run `Invoke-SubscriptionPortabilityAssessment.ps1`
-3. Review `GO` or `NO-GO`
-4. Trigger GitHub workflow once Capability 2 and CI/CD are in place
+## Current Automation Boundary
+
+Implemented:
+
+- read-only subscription portability assessment;
+- `GO` / `NO-GO` decision;
+- local assessment profile generation;
+- validated Terraform input generation.
+
+Still handled separately:
+
+- remote-state deployment;
+- environment `backend.hcl` configuration;
+- OIDC identity and federated credential provisioning;
+- Terraform plan and apply workflows;
+- GitHub environment approvals.
+
+## Target Five-Minute Migration Workflow
+
+1. Authenticate with Azure CLI.
+2. Run the portability assessment.
+3. Confirm a `GO` decision.
+4. Generate the Terraform input files.
+5. Bootstrap or select the remote-state backend.
+6. Initialize Terraform with the environment backend.
+7. Review the Terraform plan.
+8. Run the approved deployment workflow.

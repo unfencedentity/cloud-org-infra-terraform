@@ -7,21 +7,25 @@ used before onboarding a tenant or subscription.
 
 ## High-Level Azure Architecture
 
-The `environments/dev` Terraform root deploys a single-region application
-landing zone:
+The `environments/dev` Terraform root deploys an application landing zone
+split across a workload region and a monitoring region:
 
 - A virtual network with dedicated subnets for the application VM, private
   endpoints, and App Service VNet integration (with a `Microsoft.Web/serverFarms`
   delegation).
-- A network security group attached to the application subnet.
-- A Linux virtual machine with a user-assigned managed identity, a static
-  public IP, and boot diagnostics.
+- A network security group attached to the application subnet, with no
+  inbound rules by default.
+- A Linux virtual machine with a user-assigned managed identity and boot
+  diagnostics; it has a private-only network interface unless public SSH
+  access is explicitly enabled (see "VM Access Model" below).
 - A Key Vault using RBAC authorization, accessed through the VM's managed
-  identity and the deploying principal.
+  identity and the deploying principal; Terraform does not create or store
+  any secret values, and purge protection is enabled.
 - A storage account reachable only through a private endpoint into the blob
-  private DNS zone (public network access is disabled).
-- A Log Analytics workspace and Application Insights instance used as
-  diagnostic and monitoring targets.
+  private DNS zone (public network access and shared-key authentication are
+  both disabled).
+- A Log Analytics workspace and Application Insights instance, deployed in
+  the monitoring region, used as diagnostic and monitoring targets.
 - A Recovery Services vault with a daily/weekly/monthly VM backup policy
   protecting the virtual machine.
 - Azure Monitor: an action group (email notification), a VM CPU metric alert,
@@ -34,20 +38,121 @@ account with blob versioning and retention, a blob container for state files,
 an RBAC role assignment granting the deploying principal blob data access, and
 a management lock preventing deletion of the state storage account.
 
+## VM Access Model
+
+The VM's Public IP and inbound SSH NSG rule (`azurerm_public_ip.application`
+and `azurerm_network_security_rule.allow_ssh`) are conditional resources,
+created only when `local.vm_public_access_enabled` is true. That local is true
+only when both:
+
+- `enable_vm_public_ip = true`, and
+- `admin_source_cidr` is a specific, valid CIDR (rejecting `null`, empty,
+  `"*"`, `"0.0.0.0/0"`, and `"Internet"` at the variable-validation level as
+  well as at the resource-count level).
+
+By default (`enable_vm_public_ip = false`), the VM has no Public IP and no
+inbound SSH path; the network interface's `public_ip_address_id` is `null`.
+Administration in this state is expected to go through Azure Run Command or
+other private connectivity. The `vm_public_ip_address` and `vm_public_ip_id`
+outputs return `null` in this state. Enabling public SSH access is treated as
+an explicit, allowlisted exception for a single administrative source, not a
+default posture. Azure Bastion, a VPN Gateway, a NAT Gateway, and Azure
+Firewall are intentionally out of scope for this checkpoint.
+
 ## Terraform Ownership Boundaries
 
 - `bootstrap/remote-state` owns only the remote state backend. It is applied
   once per environment scope and is protected by `prevent_destroy` and a
   management lock; it is not touched by routine environment changes.
 - `environments/<name>` owns the deployed application landing zone for that
-  environment. Each environment has its own state file, backend
+  environment as the root orchestration layer: it creates the resource group
+  and naming/tagging locals, composes the modules under `modules/`, and
+  directly owns the cross-cutting alerts and diagnostic settings (see
+  "Module Structure" below). Each environment has its own state file, backend
   configuration, and variables, and environments do not reference each
   other's state.
-- `modules/` is reserved for shared Terraform modules but currently contains
-  no modules; all environment resources are defined directly in the
-  environment root.
+- `modules/` contains the reusable building blocks composed by
+  `environments/dev` (see "Module Structure" below); `bootstrap/remote-state`
+  does not use them, since it manages only the state backend itself.
 - No Terraform code depends on, or is executed by, the PowerShell onboarding
   automation described below.
+- Each Terraform root's `terraform.tfvars` and `backend.hcl` hold
+  environment-specific, non-public values (resource group names, storage
+  account names, keys). They are git-ignored; only the `.tfvars.example` and
+  `.hcl.example` templates with placeholder values are tracked.
+
+## Module Structure
+
+`environments/dev` is a structural refactor point: it still owns 100% of the
+Azure behavior described above, but the resources are now organized into six
+reusable modules plus a set of cross-cutting resources retained in the root.
+Each module has a focused `main.tf`, `variables.tf`, and `outputs.tf`, its own
+`required_providers` declaration (no provider configuration - that stays
+solely in the root's `providers.tf`), and receives only plain values and
+resource IDs from the root (never provider credentials, tenant IDs,
+subscription IDs, or secrets).
+
+| Module | Resources |
+|---|---|
+| `modules/networking` | `azurerm_virtual_network`, three `azurerm_subnet`, `azurerm_network_security_group`, the NSG-subnet association, the conditional `azurerm_network_security_rule` (SSH) and `azurerm_public_ip`, `azurerm_network_interface` |
+| `modules/identity-security` | `azurerm_user_assigned_identity`, `azurerm_key_vault`, both `azurerm_role_assignment` (Key Vault Secrets User/Officer) |
+| `modules/storage` | `azurerm_storage_account`, `azurerm_private_dns_zone`, `azurerm_private_dns_zone_virtual_network_link`, `azurerm_private_endpoint` |
+| `modules/observability` | `azurerm_log_analytics_workspace`, `azurerm_application_insights`, `azurerm_monitor_action_group` |
+| `modules/compute` | `azurerm_linux_virtual_machine`, `azurerm_recovery_services_vault`, `azurerm_backup_policy_vm`, `azurerm_backup_protected_vm` |
+| `modules/application` | `azurerm_service_plan`, `azurerm_linux_web_app` |
+
+Retained in `environments/dev/main.tf`: `azurerm_monitor_metric_alert.vm_high_cpu`,
+`azurerm_monitor_activity_log_alert.service_health`, and the six
+`azurerm_monitor_diagnostic_setting` resources (VM, NSG, Key Vault, storage
+account, Web App, App Service plan), plus the two
+`azurerm_monitor_diagnostic_categories` data sources they depend on. Each of
+these targets resources from multiple modules and routes to the
+observability module's Log Analytics workspace and action group; giving any
+one module ownership of them would force that module to depend on every
+other module purely to receive target resource IDs, inverting the modules'
+ownership boundaries without removing any actual dependency. Only the root
+naturally sees every module's outputs, so wiring these resources there keeps
+the dependency graph a clean DAG: `networking` and `identity-security` have no
+module dependencies; `storage` depends on `networking`; `observability` has
+no module dependencies; `compute` depends on `networking` and
+`identity-security`; `application` depends on `networking`,
+`identity-security`, and `observability`; the root's cross-cutting resources
+depend on all six modules. `identity-security` resolves the Key Vault's
+tenant ID and the deploying principal's object ID from its own
+`data "azurerm_client_config" "current"` block rather than receiving them as
+module inputs.
+
+This refactor is structural only: every resource keeps its original name,
+properties, conditions, dependencies, and tags; no Azure capability was added
+or removed.
+
+## Naming and Region Convention
+
+All resource names and tags are derived from `terraform.tfvars` inputs
+(`application`, `environment`, `workload_location`, `workload_region_code`,
+`monitoring_location`, `monitoring_region_code`, `instance_number`) using an
+`Application-Environment-Region-Instance` convention, matching the naming
+concept used by the `cloud-org-infra` PowerShell repository. No environment,
+region, or instance value is hardcoded in `.tf` files.
+
+- Workload resources (VNet, subnets, NSG, VM, Key Vault, storage account, App
+  Service, Recovery Services vault, etc.) are named `<type>-<name_prefix>` and
+  deployed to `workload_location`, where `name_prefix` is
+  `${application}-${environment}-${workload_region_code}-${instance_number}`.
+- Monitoring resources whose region can legitimately differ from the workload
+  (the Log Analytics workspace and Application Insights) are named
+  `<type>-<monitoring_name_prefix>` and deployed to `monitoring_location`,
+  using `monitoring_region_code` in place of `workload_region_code`.
+- Globally-unique or length-restricted resources (Storage Account, Key Vault,
+  the VM's `computer_name`) use a hyphen-free compact variant of
+  `name_prefix`. The `bootstrap/remote-state` storage account additionally
+  keeps its original fully-hashed, subscription-derived name for global
+  uniqueness and to avoid revealing the environment/region in the name.
+- Every resource that supports Azure tags is tagged with at least
+  `Application`, `Environment`, `Region`, and `ManagedBy = Terraform`.
+- `bootstrap/remote-state` uses the same convention with a fixed
+  `Application = "tfstate"` tag, since the remote-state backend is not
+  associated with a single application.
 
 ## Portability Assessment Flow
 
@@ -84,6 +189,25 @@ Invoke-SubscriptionPortabilityAssessment.ps1  (entrypoint)
   identifiers for automation, proposed deterministic resource names, and the
   full set of check results; it is written under `.generated/` and is not
   committed to version control.
+
+## Assessment-to-Terraform Input Boundary
+
+After a `GO` decision,
+`New-TerraformInputsFromAssessment.ps1` passes the validated assessment into
+the Terraform configuration boundary.
+
+The assessment supplies the validated environment, workload and monitoring
+locations, region codes, and selected VM SKU. The operator supplies values that
+are deployment-specific but are not capability checks, including application,
+instance number, SSH public key, and alert email address.
+
+`TerraformInputGenerator.psm1` validates and serializes these values into
+git-ignored `terraform.auto.tfvars.json` files for the backend bootstrap and
+environment roots. It writes files atomically, protects existing files unless
+`-Force` is specified, and supports `-WhatIf`.
+
+This stage is local and deterministic. It does not authenticate to Azure,
+execute Terraform, create a backend, or modify infrastructure.
 
 ## Role of `SubscriptionPortability.Foundation.psm1`
 
@@ -137,6 +261,7 @@ unit-tests the foundation module in isolation:
   both `bootstrap/remote-state` and `environments/dev` are currently run
   manually. The onboarding README references a future "one GitHub workflow"
   trigger that does not yet exist in this repository.
-- `modules/` is currently empty; environment roots duplicate resource
-  definitions rather than sharing modules.
+- `modules/` now holds the six reusable modules described above, but only
+  `environments/dev` composes them; there is no second environment root to
+  confirm reuse across environments yet.
 - Only a single `dev` environment root currently exists.
